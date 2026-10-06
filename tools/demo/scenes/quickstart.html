@@ -1,0 +1,226 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>quickstart demo</title>
+<style>
+  .step { position: absolute; display: flex; align-items: center; gap: 10px; padding: 8px 22px 8px 14px; border-radius: 999px; z-index: 30;
+    background: linear-gradient(120deg, #e0835f 0%, #c76a8a 55%, #8f6ee8 100%); color: #fff; white-space: nowrap;
+    box-shadow: 0 12px 34px rgba(215,119,87,0.38), 0 0 0 1px rgba(255,255,255,0.22) inset; }
+  .step .n { font-size: 24px; font-weight: 700; line-height: 1; }
+  .step .t { font-size: 19px; font-weight: 700; letter-spacing: 0.4px; }
+  .progress { position: absolute; display: flex; align-items: center; gap: 12px; color: #a1a1aa; font-size: 13px; z-index: 30; white-space: nowrap; }
+  .progress b { color: #f4f4f5; font-weight: 600; }
+  .bars { display: flex; gap: 6px; }
+  .bars div { width: 34px; height: 5px; border-radius: 3px; background: rgba(255,255,255,0.14); overflow: hidden; position: relative; }
+  .bars div i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #e0835f, #a78bfa); border-radius: 3px; }
+</style>
+</head>
+<body>
+<script type="module">
+import { Grid, drawGrid, metrics, dw } from '../lib/cells.js'
+import { makeStage, termWindow, seg, easeOut, easeOutBack, typed, lerp } from '../lib/stage.js'
+import { transcript, inputBox, hint, spinner, C } from '../lib/claude.js'
+import { drawHud, easeAt } from '../lib/hud.js'
+import { FRAME_MS } from '../lib/crab.js'
+
+const COLS = 128, ROWS = 26, CW = 8, CH = 16, SIZE = 13.65
+const W = 1200, H = 594
+const FPS = 20, DURATION = 15.8
+
+// ---------------- PowerShell 部分 ----------------
+const PS = 'PS C:\\dev\\my-app> '
+const PS_FG = '#cccccc', PS_CMD = '#f9f1a5' // Windows Terminal 默认配色 + PSReadLine 的命令名黄色
+const DT = 0.032 // 每个字的打字间隔
+const CMDS = [
+  { cmd: 'claude plugin marketplace add ronanworks/claude-code-mods', at: 0.55, out: 'Successfully added marketplace: claude-code-mods (declared in user settings)' },
+  { cmd: 'claude plugin install usage-hud@claude-code-mods', at: 4.25, out: 'Successfully installed plugin: usage-hud@claude-code-mods (scope: user)' },
+  { cmd: 'claude plugin install html-shelf@claude-code-mods', at: 6.65, out: 'Successfully installed plugin: html-shelf@claude-code-mods (scope: user)' },
+  { cmd: 'claude', at: 9.75, out: null, dt: 0.085 },
+]
+for (const c of CMDS) {
+  c.typedEnd = c.at + ([...c.cmd].length - 1) * (c.dt ?? DT)
+  c.enter = c.typedEnd + 0.22
+  c.outAt = c.enter + 0.4
+}
+const STEPS = [
+  { n: '①', t: '添加插件市场', at: 0 },
+  { n: '②', t: '安装两个 mod', at: 3.95 },
+  { n: '③', t: '启动 claude', at: 9.4 },
+]
+
+// ---------------- Claude Code 部分 ----------------
+const LAUNCH = CMDS[3].enter + 0.3 // 界面出现
+const PROMPT = '这个项目是做什么的？'
+const P_AT = LAUNCH + 0.75, P_DT = 0.075
+const P_ENTER = P_AT + ([...PROMPT].length - 1) * P_DT + 0.3
+const STEP1 = P_ENTER + 0.7 // 第一次模型回复结束: 发起 Read, 用量数据第一次到达
+const READ_END = STEP1 + 0.9
+const FADE_AT = 15.4
+const CTX_WIN = 200_000
+
+function hudState(t) {
+  const fi = Math.max(0, Math.floor(((t - LAUNCH) * 1000) / FRAME_MS))
+  const known = f => LAUNCH + (f * FRAME_MS) / 1000 >= STEP1
+  const got = t >= STEP1
+  return {
+    frame: fi, // 新会话: 帧计数从 0 开始
+    working: t >= P_ENTER,
+    currentTool: t >= STEP1 && t < READ_END ? 'Read' : '',
+    now: t * 1000,
+    startedAt: LAUNCH * 1000,
+    turnStartedAt: P_ENTER * 1000,
+    lastTurnMs: 0,
+    lastTurnTools: 0,
+    modelId: 'claude-opus-5-5',
+    effort: 'high',
+    project: 'my-app',
+    branch: 'main',
+    dirty: 0,
+    costUsd: got ? 0.06 : 0,
+    // 第一次回复之前还没有用量数据: 显示 --; 数据到了以后, 显示值从 0 起按源码的 ease() 追上去
+    ctx: { pct: got ? 11 : undefined, tokens: got ? 21_400 : undefined, window: CTX_WIN },
+    five: got ? { percentUsed: 23.4, resetsInMs: (2 * 3600 + 41 * 60 + 10) * 1000 } : undefined,
+    week: got ? { percentUsed: 41.2, resetsInMs: (3 * 86400 + 6 * 3600 + 20 * 60) * 1000 } : undefined,
+    shown: {
+      ctx: easeAt(f => (known(f) ? 11 : undefined), fi, 0),
+      h5: easeAt(f => (known(f) ? 23.4 : undefined), fi, 0),
+      wk: easeAt(f => (known(f) ? 41.2 : undefined), fi, 0),
+    },
+    // 刚启动: 会话记录文件还没写出来 -> 统计脚本找不到 -> 只显示本次启动以来的累计
+    tok: t < LAUNCH + 0.45 ? { state: 'counting' } : { state: 'failed', total: got ? 21_520 : 0, output: got ? 120 : 0 },
+    toolCounts: t >= STEP1 ? { Read: 1 } : {},
+    agents: 0,
+    celebrating: false,
+    sleeping: false,
+  }
+}
+
+// Claude Code 启动时的标题: 只用文字 (名称 / 模型 / 目录), 不画任何 logo 或吉祥物; 引擎界面, 示意
+
+function drawTerminal(api, t) {
+  const { ctx, m } = api.begin()
+  const g = new Grid(COLS, ROWS)
+  const blink = Math.floor(t / 0.5) % 2 === 0
+  let row = 0
+  let cursor = null
+  // 每条命令: 上一条的输出出来后立刻出现新的提示符; 打字 -> 回车 -> 输出
+  for (let i = 0; i < CMDS.length; i++) {
+    const c = CMDS[i]
+    const prev = CMDS[i - 1]
+    if (prev && t < (prev.out ? prev.outAt : prev.enter)) break
+    const s = typed(c.cmd, t, c.at, c.dt ?? DT)
+    let col = g.text(row, 0, PS, { fg: PS_FG })
+    const sp = s.indexOf(' ')
+    col = g.text(row, col, sp < 0 ? s : s.slice(0, sp), { fg: PS_CMD })
+    if (sp >= 0) col = g.text(row, col, s.slice(sp), { fg: PS_FG })
+    if (t < c.enter) {
+      cursor = { row, col, on: (t >= c.at && t <= c.typedEnd) || blink }
+      break
+    }
+    row++
+    if (c.out) {
+      if (t < c.outAt) {
+        cursor = { row, col: 0, on: blink }
+        break
+      }
+      g.text(row, 0, '✔', { fg: C.success })
+      g.text(row, 2, c.out, { fg: PS_FG })
+      row++
+    } else if (t < LAUNCH) cursor = { row, col: 0, on: blink }
+  }
+  // 敲完 claude: Claude Code 在下面接着画 (非全屏模式)
+  if (t >= LAUNCH) {
+    row += 1
+    g.text(row, 0, 'Claude Code', { fg: C.text, bold: true })
+    g.text(row + 1, 0, 'Opus 5.5', { fg: C.inactive })
+    g.text(row + 2, 0, 'C:\\dev\\my-app', { fg: C.inactive })
+    row += 3
+    if (t >= P_ENTER) {
+      const items = [{ kind: 'user', text: PROMPT }]
+      if (t >= STEP1) items.push({ kind: 'tool', name: 'Read', args: 'README.md', state: t >= READ_END ? 'ok' : 'run', blink: t < READ_END && Math.floor((t - STEP1) / 0.4) % 2 === 1, result: t >= READ_END ? ['Read 48 lines'] : [] })
+      row = transcript(g, row, items) + 1
+      spinner(g, row, t, Math.round(t - P_ENTER))
+      row += 1
+    }
+    row += 1
+    const text = t < P_ENTER ? typed(PROMPT, t, P_AT, P_DT) : ''
+    inputBox(g, row, text, (t >= P_AT && t < P_ENTER) || Math.floor(t / 0.53) % 2 === 0)
+    drawHud(g, row + 3, 1, COLS - 2, hudState(t))
+    hint(g, row + 6)
+  } else if (cursor && cursor.on) g.bg(cursor.row, cursor.col, cursor.col + 1, PS_FG)
+  drawGrid(ctx, g, 0, 0, m, { fg: PS_FG })
+}
+
+// ---------------- 舞台 ----------------
+makeStage(W, H)
+const winX = Math.round((W - (COLS * CW + 24)) / 2)
+const win = termWindow({ x: winX, y: 80, cols: COLS, rows: ROWS, cw: CW, ch: CH, size: SIZE, title: 'Windows PowerShell' })
+// 循环衔接: 结尾淡回开头那一帧
+const body = win.el.querySelector('.termbody')
+body.style.position = 'relative'
+const fadeCv = document.createElement('canvas')
+fadeCv.style.cssText = `position:absolute;left:12px;top:9px;width:${COLS * CW}px;height:${ROWS * CH}px;`
+body.appendChild(fadeCv)
+const fadeApi = {
+  begin() {
+    const dpr = window.devicePixelRatio || 1
+    if (fadeCv.width !== COLS * CW * dpr) {
+      fadeCv.width = COLS * CW * dpr
+      fadeCv.height = ROWS * CH * dpr
+    }
+    const ctx = fadeCv.getContext('2d')
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.fillStyle = '#0c0c0c'
+    ctx.fillRect(0, 0, COLS * CW, ROWS * CH)
+    return { ctx, m: metrics(ctx, CW, CH, SIZE) }
+  },
+}
+
+const pills = STEPS.map(s => {
+  const el = document.createElement('div')
+  el.className = 'step'
+  el.innerHTML = `<span class="n">${s.n}</span><span class="t">${s.t}</span>`
+  el.style.left = winX + 'px'
+  el.style.top = '20px'
+  document.body.appendChild(el)
+  return el
+})
+const prog = document.createElement('div')
+prog.className = 'progress'
+prog.innerHTML = '<span><b>claude-code-mods</b> · 三步装好</span><div class="bars"><div><i></i></div><div><i></i></div><div><i></i></div></div>'
+document.body.appendChild(prog)
+const progBars = [...prog.querySelectorAll('i')]
+
+window.demo = {
+  width: W,
+  height: H,
+  fps: FPS,
+  duration: DURATION,
+  check: [3.5, 8.9, 11.5, 14.6], // 抽查用的时刻 (秒)
+  ready: Promise.all([document.fonts.load('13px "Cascadia Mono"'), document.fonts.load('bold 13px "Cascadia Mono"'), document.fonts.ready]),
+  renderFrame(t) {
+    win.setTitle(t >= LAUNCH && t < FADE_AT ? 'Claude Code' : 'Windows PowerShell')
+    drawTerminal(win, t)
+    const k = easeOut(seg(t, FADE_AT, DURATION - 1 / FPS))
+    fadeCv.style.display = k > 0 ? 'block' : 'none'
+    fadeCv.style.opacity = k
+    if (k > 0) drawTerminal(fadeApi, 0)
+    // 步骤标题: 进场上浮 + 回弹, 离场上移淡出; 右上角三段进度
+    STEPS.forEach((s, i) => {
+      const end = i + 1 < STEPS.length ? STEPS[i + 1].at : FADE_AT
+      const kin = seg(t, s.at + 0.05, s.at + 0.45)
+      const kout = seg(t, end - 0.05, end + 0.2)
+      const vis = kin > 0 && kout < 1
+      pills[i].style.display = vis ? 'flex' : 'none'
+      pills[i].style.opacity = easeOut(kin) * (1 - kout)
+      pills[i].style.transform = `translateY(${lerp(16, 0, easeOutBack(kin)) - 12 * kout}px) scale(${lerp(0.92, 1, easeOutBack(kin))})`
+      progBars[i].style.width = (t >= FADE_AT ? 0 : seg(t, s.at, end) * 100) + '%'
+    })
+    prog.style.left = winX + win.width - prog.offsetWidth - 4 + 'px'
+    prog.style.top = '34px'
+  },
+}
+</script>
+</body>
+</html>

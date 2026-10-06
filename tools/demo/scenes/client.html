@@ -1,0 +1,208 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>usage-hud client demo</title>
+<style>
+  .app { position: absolute; border-radius: 12px; overflow: hidden; background: #1f1f1e; z-index: 1;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.10), 0 28px 70px rgba(0,0,0,0.62), 0 10px 26px rgba(0,0,0,0.45); }
+  .app-bar { height: 38px; background: #1a1a19; display: flex; align-items: center; padding-left: 14px; gap: 9px; color: #d6d6d3; font-size: 12.5px; position: relative; border-bottom: 1px solid #2a2a28; }
+  .app-bar .ctl { position: absolute; right: 0; top: 0; height: 38px; display: flex; }
+  .app-bar .ctl div { width: 46px; height: 38px; display: flex; align-items: center; justify-content: center; }
+  .col { position: absolute; }
+  .msg-user { position: absolute; right: 0; background: #2f2f2d; color: #ececea; border-radius: 16px; padding: 9px 15px; font-size: 14.5px; max-width: 70%; }
+  .tool { position: absolute; left: 0; display: flex; align-items: center; gap: 9px; color: #a3a3a0; font-size: 13px; }
+  .tool .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .tool b { color: #d6d6d3; font-weight: 600; }
+  .tool code { font-family: "Cascadia Mono", monospace; font-size: 12.5px; color: #a3a3a0; }
+  .msg-ai { position: absolute; left: 0; color: #ececea; font-size: 14.5px; }
+  .card { position: absolute; left: 0; background: #2b2b2b; border-radius: 14px; padding: 16px 18px; box-sizing: content-box; }
+  .card .row { display: flex; align-items: center; gap: 15px; }
+  .card .crab { flex: 0 0 auto; }
+  .card .crab svg { display: block; }
+  .card .dash { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+  .card .dash svg { display: block; max-width: 100%; height: auto; }
+  .input { position: absolute; left: 0; border: 1px solid #444; border-radius: 12px; box-sizing: border-box; padding: 0 14px; color: #77776f; font-size: 14px; display: flex; align-items: center; }
+  .input .send { margin-left: auto; width: 26px; height: 26px; border-radius: 8px; background: #d97757; display: flex; align-items: center; justify-content: center; }
+</style>
+</head>
+<body>
+<script type="module">
+import { crabSvg, dashSvg } from '../vendor/desktop.js'
+import { makeStage, seg, easeOut, lerp, typed } from '../lib/stage.js'
+import { prettyModel, dur, durShort, big, tok } from '../lib/hud.js'
+
+const W = 1200, H = 556
+const FPS = 20, DURATION = 10.4
+
+// ---------------- 卡片尺寸: 照 register.tsx 的 buildDesktop 和 tools/preview-client.mjs ----------------
+const COLS = 120 // 客户端横栏的格数 (bodyColumns)
+const PX_PER_COL = 7.35
+const crabScale = 5
+const crabW = 16 * crabScale
+const est = Math.round(COLS * PX_PER_COL) - crabW - 15
+const dashW = Math.max(340, Math.min(1040, Math.round(est * 1.05) + 20))
+const contentW = Math.round(COLS * PX_PER_COL)
+
+// ---------------- 剧情 ----------------
+const PROMPT = '给登录页加个「记住我」选项，改完跑一下测试'
+const SEND = 1.5
+const TOOLS = [
+  { tool: 'Read', kind: 'read', args: 'src/auth/login.ts', start: 2.2, end: 3.3 },
+  { tool: 'Bash', kind: 'bash', args: 'npm test -- auth', start: 3.6, end: 4.9 },
+  { tool: 'Write', kind: 'edit', args: 'src/auth/remember.ts', start: 5.2, end: 6.6 },
+]
+const FINAL = '已加上「记住我」：勾选后 30 天内免登录，14 个测试全部通过。'
+const FINAL_AT = 6.9
+const COMPLETE = 7.3
+const CELEBRATE = 1.4
+const FADE_AT = 10.0
+const STEPS = [2.2, 3.6, 5.2, 6.9]
+const CTX = [82_000, 86_000, 88_000, 96_000, 99_000]
+const FIVE = [23.0, 23.6, 24.3, 25.1, 25.8]
+const WEEK = [41.2, 41.3, 41.4, 41.6, 41.7]
+const COST = [3.12, 3.19, 3.26, 3.35, 3.42]
+const OUT = [0, 380, 210, 1650, 260]
+const SESSION_MS = (1 * 3600 + 12 * 60 + 5) * 1000
+const TOOLS_LABEL = { '': '思考中', Read: '读文件', Bash: '跑命令', Write: '写文件' }
+
+const stepIdx = t => STEPS.filter(s => t >= s).length
+function dashData(t) {
+  const k = stepIdx(t)
+  const working = t >= SEND && t < COMPLETE
+  const running = TOOLS.find(x => t >= x.start && t < x.end)
+  const counts = { Read: 6, Bash: 4, Write: 3, Grep: 2 }
+  for (const x of TOOLS) if (t >= x.start) counts[x.tool]++
+  let total = 18_420_000, output = 91_200
+  for (let i = 1; i <= k; i++) {
+    total += CTX[i] + OUT[i]
+    output += OUT[i]
+  }
+  const done = t >= COMPLETE
+  // 和 buildDesktop 一样拼 DashData
+  const status = working
+    ? { text: TOOLS_LABEL[running ? running.tool : ''], tone: 'work' }
+    : { text: '✓ 上一轮 ' + dur(done ? (COMPLETE - SEND) * 1000 : 64_000) + '，' + (done ? 3 : 6) + ' 次工具', tone: 'idle' }
+  const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([n, c]) => n + ' ' + c).join('  ')
+  return {
+    model: prettyModel('claude-opus-5-5'),
+    effort: 'high',
+    project: 'my-app',
+    branch: 'main',
+    session: dur(SESSION_MS + t * 1000),
+    cost: '$' + COST[k].toFixed(2),
+    ctx: { pct: Math.round((CTX[k] / 200_000) * 100), extra: tok(CTX[k]) + ' / ' + tok(200_000) },
+    five: { pct: FIVE[k], extra: durShort((2 * 3600 + 41 * 60 + 10) * 1000) + ' 后重置' },
+    week: { pct: WEEK[k], extra: durShort((3 * 86400 + 6 * 3600 + 20 * 60) * 1000) + ' 后重置' },
+    status,
+    tools: top,
+    tokenTotal: big(total),
+    tokenOutput: big(output),
+  }
+}
+// 螃蟹图只在状态变化时换 (客户端里换图 = SMIL 动画从头播); 返回 [状态, 这张图出现的时刻]
+function crabAt(t) {
+  if (t < SEND) return [{ mode: 'idle', kind: 'think', heat: 'ok', agents: 0 }, -8.5] // 闲置图在开头之前就挂着了
+  if (t < COMPLETE) {
+    const r = TOOLS.find(x => t >= x.start && t < x.end)
+    if (r) return [{ mode: 'work', kind: r.kind, heat: 'ok', agents: 0 }, r.start]
+    const prevEnd = Math.max(SEND, ...TOOLS.filter(x => t >= x.end).map(x => x.end))
+    return [{ mode: 'work', kind: 'think', heat: 'ok', agents: 0 }, prevEnd]
+  }
+  if (t < COMPLETE + CELEBRATE) return [{ mode: 'celebrate', kind: 'think', heat: 'ok', agents: 0 }, COMPLETE]
+  return [{ mode: 'idle', kind: 'think', heat: 'ok', agents: 0 }, COMPLETE + CELEBRATE]
+}
+
+// ---------------- 舞台 ----------------
+makeStage(W, H)
+const AW = 1060, AH = 442
+const AX = (W - AW) / 2, AY = 74
+const COLW = contentW + 36
+const colX = (AW - COLW) / 2
+
+function buildApp(z) {
+  const app = document.createElement('div')
+  app.className = 'app'
+  app.style.cssText = `left:${AX}px;top:${AY}px;width:${AW}px;height:${AH}px;z-index:${z}`
+  app.innerHTML = `
+    <div class="app-bar">Claude
+      <div class="ctl">
+        <div><svg width="10" height="10"><rect y="4.5" width="10" height="1" fill="#cfcfcf"/></svg></div>
+        <div><svg width="10" height="10"><rect x=".5" y=".5" width="9" height="9" rx="1.5" fill="none" stroke="#cfcfcf"/></svg></div>
+        <div><svg width="10" height="10"><path d="M.5 .5 9.5 9.5M9.5 .5 .5 9.5" stroke="#cfcfcf"/></svg></div>
+      </div></div>
+    <div class="col" style="left:${colX}px;top:38px;width:${COLW}px;height:${AH - 38}px">
+      <div class="msgs"></div>
+      <div class="card" style="width:${contentW}px"><div class="row"><div class="crab"></div><div class="dash"></div></div></div>
+      <div class="input" style="width:${COLW}px;height:52px">输入消息…<div class="send"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 10V2M2.5 5.5 6 2l3.5 3.5" stroke="#1c1917" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg></div></div>
+    </div>`
+  document.body.appendChild(app)
+  return { app, msgs: app.querySelector('.msgs'), card: app.querySelector('.card'), crab: app.querySelector('.crab'), dash: app.querySelector('.dash'), input: app.querySelector('.input'), mounted: '' }
+}
+const main = buildApp(1)
+const fade = buildApp(2)
+
+function draw(v, t, typingOn) {
+  // 消息
+  const parts = []
+  let y = 22
+  if (t >= SEND) {
+    parts.push(`<div class="msg-user" style="top:${y}px">${PROMPT}</div>`)
+    y += 58
+  }
+  for (const x of TOOLS) {
+    if (t < x.start) continue
+    const ok = t >= x.end
+    const dot = ok ? '#4eba65' : Math.floor((t - x.start) / 0.4) % 2 ? '#5a5a57' : '#a3a3a0'
+    parts.push(`<div class="tool" style="top:${y}px"><span class="dot" style="background:${dot}"></span><b>${x.tool}</b><code>${x.args}</code></div>`)
+    y += 30
+  }
+  if (t >= FINAL_AT) parts.push(`<div class="msg-ai" style="top:${y + 10}px">${typed(FINAL, t, FINAL_AT, 0.35 / [...FINAL].length)}</div>`)
+  v.msgs.innerHTML = parts.join('')
+  // 卡片 + 输入框贴在底部
+  const cardH = v.card.offsetHeight
+  const inputTop = AH - 38 - 52 - 22
+  v.input.style.top = inputTop + 'px'
+  v.card.style.top = inputTop - 12 - cardH + 'px'
+  // 螃蟹: 真的 crabSvg; 状态没变就不换图, 动画时间 = t - 换图时刻
+  const [st, since] = crabAt(t)
+  const key = JSON.stringify(st) + since
+  if (v.mounted !== key) {
+    v.crab.innerHTML = crabSvg(st, crabScale)
+    v.mounted = key
+  }
+  const svg = v.crab.querySelector('svg')
+  svg.pauseAnimations()
+  svg.setCurrentTime(Math.max(0, t - since))
+  // 仪表盘: 真的 dashSvg (客户端版用量条不做滚动过渡, 数据变了直接换)
+  v.dash.innerHTML = dashSvg(dashData(t), { compact: false, width: dashW })
+  v.input.firstChild.textContent = t < SEND ? typed(PROMPT, t, 0.25, 0.05) || '输入消息…' : '输入消息…'
+  v.input.style.color = t < SEND && t >= 0.25 ? '#ececea' : '#77776f'
+}
+
+// 标题
+const cap = document.createElement('div')
+cap.className = 'caption'
+cap.style.left = AX + 4 + 'px'
+cap.style.top = '24px'
+cap.innerHTML = '<b>usage-hud · 客户端版</b><span>Claude 桌面客户端的 Code 标签页: 输入框上方的同款面板 (SVG 绘制)</span>'
+document.body.appendChild(cap)
+
+window.demo = {
+  width: W,
+  height: H,
+  fps: FPS,
+  duration: DURATION,
+  check: [1.0, 2.8, 4.2, 5.8, 8.0], // 抽查用的时刻 (秒)
+  ready: document.fonts.ready,
+  renderFrame(t) {
+    draw(main, t)
+    const k = easeOut(seg(t, FADE_AT, DURATION - 1 / FPS))
+    fade.app.style.display = k > 0 ? 'block' : 'none'
+    fade.app.style.opacity = k
+    if (k > 0) draw(fade, 0)
+  },
+}
+</script>
+</body>
+</html>

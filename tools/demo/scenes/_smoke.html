@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; background: #0c0c0c; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+import { Grid, drawGrid, metrics } from '../lib/cells.js'
+import { scenePx, setFrame, SPRITE_W } from '../lib/crab.js'
+const W = 600, H = 200
+const cv = document.getElementById('c')
+cv.style.width = W + 'px'; cv.style.height = H + 'px'
+window.demo = {
+  width: W, height: H, fps: 5, duration: 1,
+  ready: document.fonts.ready,
+  renderFrame(t) {
+    const dpr = devicePixelRatio
+    cv.width = W * dpr; cv.height = H * dpr
+    const ctx = cv.getContext('2d')
+    ctx.scale(dpr, dpr)
+    ctx.fillStyle = '#0c0c0c'; ctx.fillRect(0, 0, W, H)
+    const m = metrics(ctx, 8, 16, 13.65)
+    const g = new Grid(70, 10)
+    g.text(0, 0, '● Read(src/app.ts) 中文对齐测试 模型 上下文', { fg: '#ffffff' })
+    g.text(1, 0, '  ⎿  Read 86 lines  ✓ 待命  ✻ ▁▂▃▅▇', { fg: '#999999' })
+    g.text(2, 0, '━━━━━━━━━', { fg: '#4ade80' })
+    g.text(3, 0, '╭──────╮', { fg: '#888888' })
+    g.text(4, 0, '│ >    │', { fg: '#888888' })
+    g.text(5, 0, '╰──────╯', { fg: '#888888' })
+    g.text(6, 0, 'abcdefghij0123456789', { fg: '#fff', bold: true })
+    g.text(7, 0, '一二三四五六七八九十', { fg: '#fff' })
+    setFrame(Math.floor(t / 0.15))
+    g.raster(3, 20, scenePx({ working: true, kind: 'read', pct: 30, celebrating: false, sleeping: false, agents: 0 }), SPRITE_W, 3)
+    drawGrid(ctx, g, 10, 10, m)
+  },
+}
+</script>
+</body>
+</html>

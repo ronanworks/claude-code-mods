@@ -1,0 +1,8 @@
+{
+  "name": "html-shelf",
+  "version": "0.4.0",
+  "description": "终端里 Claude 的回复：.html 路径单击用浏览器打开；代码块画成带底色的卡片，一键复制；/open 打开最近的 HTML",
+  "author": { "name": "Ronan" },
+  "repository": "https://github.com/ronanworks/claude-code-mods",
+  "license": "MIT"
+}

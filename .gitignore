@@ -1,0 +1,10 @@
+# 引擎每次加载 mod 时自动生成的类型声明 (各自目录里也有一个 .gitignore)
+.claude-plugin/types/
+# 改动前手动留的旧版本备份; 有了 git 历史, 不进仓库
+_backup/
+# 预览脚本生成的页面、动图的中间帧
+tools/out/
+tools/demo/out/
+# 检查脚本用的本机禁词表 (含本机路径和名字)
+tools/demo/banned.local.txt
+node_modules/
