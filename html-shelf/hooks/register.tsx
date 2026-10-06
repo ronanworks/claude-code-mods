@@ -60,11 +60,26 @@ async function ranOk($: any, argv: string[]): Promise<boolean> {
   }
 }
 
+// WSL 里一般没有 Linux 的浏览器和文件管理器: 交给 Windows 那边的默认程序.
+// 先试 wslview (wslu 包), 再经 wslpath 把路径转成 Windows 写法交给 explorer.exe
+// (explorer.exe 成功也常返回 1, 所以 exit 0); 网址直接交给 explorer.exe
+function wslTries(target: string): string[][] {
+  const viaExplorer = /^[a-z][a-z0-9+.-]*:\/\//i.test(target)
+    ? ['sh', '-c', 'explorer.exe "$1"; exit 0', 'sh', target]
+    : ['sh', '-c', 'explorer.exe "$(wslpath -w "$1")"; exit 0', 'sh', target]
+  return [['wslview', target], viaExplorer]
+}
+
 // macOS / Linux: 用系统默认程序打开 (文件 → 默认应用, 文件夹 → 文件管理器, 网址 → 浏览器); 都不行就抛错
 async function openPosix($: any, target: string, sys: OS): Promise<void> {
-  const tries = sys === 'mac' ? [['open', target]] : [['xdg-open', target], ['gio', 'open', target], ['wslview', target]]
+  const tries: string[][] = []
+  if (sys === 'mac') tries.push(['open', target])
+  else {
+    if (await $.env.get('WSL_DISTRO_NAME')) tries.push(...wslTries(target))
+    tries.push(['xdg-open', target], ['gio', 'open', target])
+  }
   for (const argv of tries) if (await ranOk($, argv)) return
-  throw new Error(sys === 'mac' ? 'open 没能打开' : '没找到能用的 xdg-open / gio / wslview')
+  throw new Error('没能打开, 试过: ' + tries.map(a => (a[0] === 'sh' ? 'explorer.exe' : a[0])).join(' / '))
 }
 // ---- 跨平台 完 ----
 

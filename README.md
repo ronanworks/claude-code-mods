@@ -2,6 +2,8 @@
 
 # claude-code-mods
 
+简体中文 | [English](README.en.md)
+
 **给 Claude Code 终端补上「客户端才有」的顺手功能**
 
 会动的像素螃蟹用量面板 · 单击就开的 HTML 链接 · 带底色的代码卡片一键复制
@@ -26,7 +28,7 @@ Claude Code 的 [mods](https://code.claude.com/docs/zh-CN/plugins/mods/overview)
 
 ## 快速开始
 
-<img src="assets/quickstart.gif" alt="三步上手：克隆、写进 settings.json、启动 claude" width="900">
+<img src="assets/quickstart.gif" alt="三步上手：添加插件市场、安装两个 mod、启动 claude" width="900">
 
 **1. 添加插件市场**（在你的终端里运行）
 
@@ -127,10 +129,11 @@ claude --plugin-dir ./claude-code-mods/usage-hud --plugin-dir ./claude-code-mods
 
 | 项目 | 说明 |
 |---|---|
-| Claude Code | 终端版 2.1.287 及以上，桌面客户端 2.1.286 及以上（官方对 mods 的要求）。在 2.1.289 上测试 |
-| 系统 | Windows 11 + Windows Terminal 上真机测试。macOS（用 `open` 打开）和 Linux（用 `xdg-open`，不行再试 `gio open`、`wslview`）的分支只做了模拟测试，还没在真机上跑过，遇到问题欢迎提 issue |
+| Claude Code | 终端版 2.1.287 及以上，桌面客户端 2.1.286 及以上（官方对 mods 的要求）。在 2.1.289（Windows）和 2.1.290（WSL）上测试 |
+| 系统 | **Windows**：Windows 11 + Windows Terminal 真机测试。**Linux**：在 WSL（Ubuntu 22.04）里实测过插件测试和打开文件 / 文件夹的命令。**macOS**：只做了模拟测试，遇到问题欢迎提 issue |
+| 打开方式 | Windows 用 `explorer.exe` / `cmd start`；macOS 用 `open`；Linux 用 `xdg-open`，不行再试 `gio open`；WSL 里优先交给 Windows 的默认程序（`wslview`，没有就经 `wslpath` 交给 `explorer.exe`） |
 | 渲染 | 点击、悬停需要全屏渲染（`/tui fullscreen`） |
-| 依赖 | Node.js（usage-hud 用一个小脚本统计 token，要能在 PATH 里找到）、git（显示分支）；Linux 打开文件要有 xdg-utils |
+| 依赖 | Node.js（usage-hud 用一个小脚本统计 token，要能在 PATH 里找到）、git（显示分支）；Linux（非 WSL）打开文件要有 xdg-utils |
 
 - macOS 的桌面客户端里，如果 Node.js 是用 Homebrew 或 nvm 装的，客户端可能找不到它。这时 token 一栏会退回只显示「本次启动」以来的数，其他不受影响。
 - 设置了 `CLAUDE_CONFIG_DIR` 的话，usage-hud 会到那个目录下找会话记录。
@@ -177,28 +180,3 @@ assets/                     README 用的动图
 ## 许可证
 
 [MIT](LICENSE) © 2026 Ronan
-
----
-
-### English
-
-Two [mods](https://code.claude.com/docs/en/plugins/mods/overview) for the Claude Code terminal UI:
-
-- **usage-hud**: an animated pixel-crab usage panel under the prompt. It shows model and effort, project and branch, session time and cost, context / 5-hour / weekly usage, and tokens. The crab acts out the tool Claude is using.
-- **html-shelf**: `.html` paths in replies become clickable and open in your browser. Code blocks are drawn as theme-aware cards with a one-click copy button.
-
-**Quick start** (Claude Code 2.1.287+):
-
-```bash
-claude plugin marketplace add ronanworks/claude-code-mods
-```
-
-```bash
-claude plugin install usage-hud@claude-code-mods
-```
-
-```bash
-claude plugin install html-shelf@claude-code-mods
-```
-
-Restart `claude`. Clicking and hovering need fullscreen rendering (`/tui fullscreen`). The UI text is Chinese. Tested on Windows 11 with Claude Code 2.1.289. The macOS (`open`) and Linux (`xdg-open`, then `gio open` / `wslview`) code paths are covered by mocked tests but haven't been run on real machines yet; issues are welcome.

@@ -38,6 +38,7 @@ type Sys = { cwd: string; env: Record<string, string>; mac?: boolean; broken?: s
 const WIN: Sys = { cwd: 'D:\\proj', env: { OS: 'Windows_NT', USERPROFILE: 'C:\\Users\\me' } }
 const MAC: Sys = { cwd: '/Users/me/proj', env: { HOME: '/Users/me' }, mac: true }
 const LINUX: Sys = { cwd: '/home/me/proj', env: { HOME: '/home/me' }, broken: ['xdg-open'] }
+const WSL: Sys = { cwd: '/home/me/proj', env: { HOME: '/home/me', WSL_DISTRO_NAME: 'Ubuntu-22.04' }, broken: ['wslview'] }
 
 function mocks(on: any, sys: Sys = WIN) {
   const log = { opened: [] as unknown[], copied: [] as string[], toasts: [] as string[] }
@@ -192,6 +193,18 @@ test('Linux: xdg-open 打不开时改用 gio open；路径区分大小写', asyn
   expect(log.opened).toEqual([
     ['xdg-open', '/home/me/notes/a.html'],
     ['gio', 'open', '/home/me/notes/a.html'],
+  ])
+  await ui.unmount()
+})
+
+test('WSL: 没有 wslview 时经 wslpath 交给 Windows 的 explorer.exe 打开', async ($, on) => {
+  const log = mocks(on, WSL)
+  const ui = await mount($, 'terminal', 'm8', POSIX_TEXT)
+  await ui.press({ key: 'html-links-m8', link: { href: 'file:///home/me/proj/docs/report.html' } })
+  const p = '/home/me/proj/docs/report.html'
+  expect(log.opened).toEqual([
+    ['wslview', p],
+    ['sh', '-c', 'explorer.exe "$(wslpath -w "$1")"; exit 0', 'sh', p],
   ])
   await ui.unmount()
 })

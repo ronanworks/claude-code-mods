@@ -25,6 +25,7 @@ const LINUX: Sys = {
   env: { HOME: '/home/me', CLAUDE_CONFIG_DIR: '/home/me/.config/claude' },
   broken: ['xdg-open'],
 }
+const WSL: Sys = { cwd: '/home/me/my-app', env: { HOME: '/home/me', WSL_DISTRO_NAME: 'Ubuntu-22.04' }, broken: ['wslview'] }
 
 function mocks(on: any, calls: { run: string[][]; cmd: string[] }, sys: Sys = WIN) {
   on('clock.now', async () => ({ value: Date.now() }))
@@ -240,6 +241,19 @@ test('Linux: 设置了 CLAUDE_CONFIG_DIR 就在它下面找会话记录；xdg-op
   expect(opens).toEqual([
     ['xdg-open', '/home/me/my-app'],
     ['gio', 'open', '/home/me/my-app'],
+  ])
+  await ui.unmount()
+})
+
+test('WSL: 点项目名时没有 wslview 就经 wslpath 交给 Windows 的 explorer.exe', async ($, on) => {
+  const calls = await start($, on, WSL)
+  expect(calls.run.find(a => a[0] === 'node')?.[2]).toBe('/home/me/.claude/projects/-home-me-my-app/abc-123.jsonl')
+  const ui = await mountHint($, 'terminal', 140)
+  await ui.press({ key: 'btn-project' })
+  const opens = calls.run.filter(a => ['xdg-open', 'gio', 'wslview', 'sh'].includes(a[0]))
+  expect(opens).toEqual([
+    ['wslview', '/home/me/my-app'],
+    ['sh', '-c', 'explorer.exe "$(wslpath -w "$1")"; exit 0', 'sh', '/home/me/my-app'],
   ])
   await ui.unmount()
 })
