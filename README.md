@@ -8,7 +8,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-d97757.svg)](LICENSE)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.287%2B-d97757)
-![Platform](https://img.shields.io/badge/tested%20on-Windows-0078d4)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078d4)
 ![mods](https://img.shields.io/badge/Claude%20Code-mods-8a63d2)
 
 <img src="assets/usage-hud.gif" alt="usage-hud：输入框下方的像素螃蟹用量面板" width="900">
@@ -128,9 +128,12 @@ claude --plugin-dir ./claude-code-mods/usage-hud --plugin-dir ./claude-code-mods
 | 项目 | 说明 |
 |---|---|
 | Claude Code | 终端版 2.1.287 及以上，桌面客户端 2.1.286 及以上（官方对 mods 的要求）。在 2.1.289 上测试 |
-| 系统 | 在 Windows 11 + Windows Terminal 上测试。macOS / Linux 没测过：打开文件和文件夹用的是 Windows 命令，这两项在别的系统上会失败；面板、复制不受影响 |
+| 系统 | Windows 11 + Windows Terminal 上真机测试。macOS（用 `open` 打开）和 Linux（用 `xdg-open`，不行再试 `gio open`、`wslview`）的分支只做了模拟测试，还没在真机上跑过，遇到问题欢迎提 issue |
 | 渲染 | 点击、悬停需要全屏渲染（`/tui fullscreen`） |
-| 依赖 | Node.js（usage-hud 用一个小脚本统计 token）、git（显示分支） |
+| 依赖 | Node.js（usage-hud 用一个小脚本统计 token，要能在 PATH 里找到）、git（显示分支）；Linux 打开文件要有 xdg-utils |
+
+- macOS 的桌面客户端里，如果 Node.js 是用 Homebrew 或 nvm 装的，客户端可能找不到它。这时 token 一栏会退回只显示「本次启动」以来的数，其他不受影响。
+- 设置了 `CLAUDE_CONFIG_DIR` 的话，usage-hud 会到那个目录下找会话记录。
 
 ## 卸载
 
@@ -198,4 +201,4 @@ claude plugin install usage-hud@claude-code-mods
 claude plugin install html-shelf@claude-code-mods
 ```
 
-Restart `claude`. Clicking and hovering need fullscreen rendering (`/tui fullscreen`). The UI text is Chinese. Tested on Windows 11 with Claude Code 2.1.289; opening files and folders uses Windows commands, so those two actions don't work on macOS / Linux yet.
+Restart `claude`. Clicking and hovering need fullscreen rendering (`/tui fullscreen`). The UI text is Chinese. Tested on Windows 11 with Claude Code 2.1.289. The macOS (`open`) and Linux (`xdg-open`, then `gio open` / `wslview`) code paths are covered by mocked tests but haven't been run on real machines yet; issues are welcome.

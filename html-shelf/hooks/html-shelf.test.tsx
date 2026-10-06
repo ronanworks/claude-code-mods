@@ -33,13 +33,26 @@ const MIXED = [
 
 const NESTED = ['示例：', '````markdown', '```bash', 'echo hi', '```', '````', '~~~', 'plain tilde', '~~~'].join('\n')
 
-function mocks(on: any) {
+// 模拟三种系统: 工作目录、环境变量、是不是 macOS、打不开的命令 (退出码 3)
+type Sys = { cwd: string; env: Record<string, string>; mac?: boolean; broken?: string[] }
+const WIN: Sys = { cwd: 'D:\\proj', env: { OS: 'Windows_NT', USERPROFILE: 'C:\\Users\\me' } }
+const MAC: Sys = { cwd: '/Users/me/proj', env: { HOME: '/Users/me' }, mac: true }
+const LINUX: Sys = { cwd: '/home/me/proj', env: { HOME: '/home/me' }, broken: ['xdg-open'] }
+
+function mocks(on: any, sys: Sys = WIN) {
   const log = { opened: [] as unknown[], copied: [] as string[], toasts: [] as string[] }
-  on('session.cwd', async () => ({ value: 'D:\\proj' }))
-  on('fs.exists', async ($: any, e: any) => ({ value: /weekly-report|report\.html$/.test(String(e.path ?? e)) }))
+  on('session.cwd', async () => ({ value: sys.cwd }))
+  on('env.get', async ($: any, e: any) => ({ value: sys.env[String(e.name ?? e)] }))
+  on('fs.exists', async ($: any, e: any) => {
+    const p = String(e.path ?? e)
+    // 测试跑在 Windows 上, 引擎可能把 /System/... 规整成本机写法, 只比结尾
+    if (/[\\/]System[\\/]Library[\\/]CoreServices$/.test(p)) return { value: !!sys.mac }
+    return { value: /weekly-report|report\.html$|notes[\\/]a\.html$/.test(p) }
+  })
   on('process.run', async ($: any, e: any) => {
-    log.opened.push(e.argv ?? e)
-    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    const argv: string[] = e.argv ?? e
+    log.opened.push(argv)
+    return { value: { exitCode: sys.broken?.includes(argv[0]) ? 3 : 0, stdout: '', stderr: '' } }
   })
   on('ui.toast', async ($: any, e: any) => {
     log.toasts.push(JSON.stringify(e))
@@ -153,5 +166,32 @@ test('四个反引号包住的代码块、~~~ 代码块都按整块复制', asyn
   await ui.press({ key: 'copy-1' })
   await ui.press({ key: 'copy-2' })
   expect(log.copied).toEqual(['```bash\necho hi\n```', 'plain tilde'])
+  await ui.unmount()
+})
+
+const POSIX_TEXT = '报告在 `docs/report.html`，笔记在 ~/notes/a.html 。'
+
+test('macOS: 相对路径和 ~ 路径都变成 file:// 链接，单击用 open 打开', async ($, on) => {
+  const log = mocks(on, MAC)
+  const ui = await mount($, 'terminal', 'm6', POSIX_TEXT)
+  const md: any = await ui.find({ type: 'Markdown' } as any)
+  expect(md.text).toContain('](file:///Users/me/proj/docs/report.html)')
+  expect(md.text).toContain('](file:///Users/me/notes/a.html)')
+  await ui.press({ key: 'html-links-m6', link: { href: 'file:///Users/me/proj/docs/report.html' } })
+  expect(log.opened).toEqual([['open', '/Users/me/proj/docs/report.html']])
+  await ui.unmount()
+})
+
+test('Linux: xdg-open 打不开时改用 gio open；路径区分大小写', async ($, on) => {
+  const log = mocks(on, LINUX)
+  const ui = await mount($, 'terminal', 'm7', POSIX_TEXT)
+  const md: any = await ui.find({ type: 'Markdown' } as any)
+  expect(md.text).toContain('](file:///home/me/proj/docs/report.html)')
+  expect(md.text).toContain('](file:///home/me/notes/a.html)')
+  await ui.press({ key: 'html-links-m7', link: { href: 'file:///home/me/notes/a.html' } })
+  expect(log.opened).toEqual([
+    ['xdg-open', '/home/me/notes/a.html'],
+    ['gio', 'open', '/home/me/notes/a.html'],
+  ])
   await ui.unmount()
 })

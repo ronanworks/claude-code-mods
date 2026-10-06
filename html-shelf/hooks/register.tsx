@@ -1,8 +1,9 @@
 import type { Register } from 'claude-code'
 
 // html-shelf: 让终端里 Claude 的回复更顺手
-//   1. 回复里的 .html 路径 (裸路径 / `代码` / [文字](路径)) 变成链接,
-//      全屏终端里单击 = 用默认浏览器打开 (文件必须真实存在才变链接)
+//   1. 回复里的 .html 路径 (裸路径 / `代码` / [文字](路径) / ~/路径) 变成链接,
+//      全屏终端里单击 = 用默认浏览器打开 (文件必须真实存在才变链接);
+//      Windows 用 explorer.exe, macOS 用 open, Linux 用 xdg-open (不行再试 gio open / wslview)
 //   2. 终端里每个写完的代码块 (```) 画成一张卡片: 标题栏 (语言名 + 复制) 和代码区
 //      各用主题里的一种底色, 跟着深色/浅色主题走; 鼠标移上去标题栏变亮、"复制"变橙,
 //      单击 = 代码原文进剪贴板 (末尾不带换行, 粘进 PowerShell 不会直接执行),
@@ -25,7 +26,51 @@ const CARD_HEAD_HOVER = 'userMessageBackgroundHover'
 const CARD_BODY = 'composerSidebarBackground'
 const COPIED_MS = 1_800
 
+// ---- 跨平台 (usage-hud 里有同样一份; 带 $ 的函数必须写在本文件里, 不能 import) ----
+type OS = 'windows' | 'mac' | 'linux'
+
+// 按工作目录缓存: 同一个目录只判断一次, 换了目录 (或测试里换了系统) 再判断
+let knownOS: { key: string; os: OS } | undefined
+
+// 判断顺序: 环境变量 OS=Windows_NT (Windows 自带) → 路径像 C:\ → 有 /System/Library/CoreServices 就是 macOS → 其余按 Linux
+async function detectOS($: any, dir: string): Promise<OS> {
+  if (knownOS && knownOS.key === dir) return knownOS.os
+  let found: OS = 'linux'
+  try {
+    if ((await $.env.get('OS')) === 'Windows_NT' || /^[A-Za-z]:[\\/]/.test(dir)) found = 'windows'
+    else if (await $.fs.exists('/System/Library/CoreServices')) found = 'mac'
+  } catch {}
+  knownOS = { key: dir, os: found }
+  return found
+}
+
+// 用户主目录: Windows 用 USERPROFILE, 其余用 HOME
+async function homeDir($: any, sys: OS): Promise<string> {
+  const h = (sys === 'windows' ? await $.env.get('USERPROFILE') : '') || (await $.env.get('HOME')) || ''
+  return h.replace(/[\\/]+$/, '')
+}
+
+// 跑一个命令, 退出码 0 算成功; 命令不存在会抛错, 也算失败
+async function ranOk($: any, argv: string[]): Promise<boolean> {
+  try {
+    const r = await $.process.run(argv, { timeoutMs: 10_000 })
+    return r.exitCode === 0
+  } catch {
+    return false
+  }
+}
+
+// macOS / Linux: 用系统默认程序打开 (文件 → 默认应用, 文件夹 → 文件管理器, 网址 → 浏览器); 都不行就抛错
+async function openPosix($: any, target: string, sys: OS): Promise<void> {
+  const tries = sys === 'mac' ? [['open', target]] : [['xdg-open', target], ['gio', 'open', target], ['wslview', target]]
+  for (const argv of tries) if (await ranOk($, argv)) return
+  throw new Error(sys === 'mac' ? 'open 没能打开' : '没找到能用的 xdg-open / gio / wslview')
+}
+// ---- 跨平台 完 ----
+
 let cwd = ''
+let os: OS = 'windows' // useOS() 之后才准
+let home = '' // macOS / Linux 展开 ~/ 用
 let recent: string[] = [] // 绝对路径, 最新在前
 const existCache = new Map<string, boolean>()
 const copied = new Set<string>() // 刚复制过的代码块: `${消息 id}:${第几块}`
@@ -34,30 +79,44 @@ type Part =
   | { kind: 'prose'; text: string }
   | { kind: 'code'; lang: string; code: string; indent: number; fenced: string }
 
-const isAbs = (p: string) => /^[a-zA-Z]:[\\/]|^[\\/]{2}/.test(p)
 const winPath = (p: string) => p.replace(/\//g, '\\')
 const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p
+// 去重和缓存用的键: Linux 文件名分大小写, Windows / macOS 默认不分
+const keyOf = (abs: string) => (os === 'linux' ? abs : abs.toLowerCase())
+
+// 先弄清在哪个系统上: 路径怎么拼、用什么命令打开都看它
+async function useOS($: any) {
+  cwd = (await $.session.cwd()) || cwd
+  os = await detectOS($, cwd)
+  home = os === 'windows' ? '' : await homeDir($, os)
+}
 
 function absolute(p: string): string {
-  let s = p.replace(/^file:\/\/\/?/i, '')
+  let s = p.replace(/^file:\/\/(localhost)?/i, '') // file:///C:/x → /C:/x, file:///home/x → /home/x
   try {
     s = decodeURIComponent(s)
   } catch {}
-  s = winPath(s)
-  if (isAbs(s)) return s
-  return winPath(cwd.replace(/[\\/]+$/, '') + '\\' + s.replace(/^\.[\\/]/, ''))
+  if (os === 'windows') {
+    s = winPath(s.replace(/^\/(?=[A-Za-z]:)/, ''))
+    if (/^[a-zA-Z]:[\\/]|^[\\/]{2}/.test(s)) return s
+    return winPath(cwd.replace(/[\\/]+$/, '') + '\\' + s.replace(/^\.[\\/]/, ''))
+  }
+  if (s.startsWith('~/') && home) s = home + s.slice(1)
+  if (s.startsWith('/')) return s
+  return cwd.replace(/\/+$/, '') + '/' + s.replace(/^\.\//, '')
 }
 
 function toHref(abs: string): string {
-  return 'file:///' + encodeURI(abs.replace(/\\/g, '/')).replace(/#/g, '%23').replace(/\?/g, '%3F')
+  const path = os === 'windows' ? '/' + abs.replace(/\\/g, '/') : abs
+  return 'file://' + encodeURI(path).replace(/#/g, '%23').replace(/\?/g, '%3F')
 }
 
 function remember(abs: string) {
-  recent = [abs, ...recent.filter(p => p.toLowerCase() !== abs.toLowerCase())].slice(0, MAX_RECENT)
+  recent = [abs, ...recent.filter(p => keyOf(p) !== keyOf(abs))].slice(0, MAX_RECENT)
 }
 
 async function exists($: any, abs: string): Promise<boolean> {
-  const key = abs.toLowerCase()
+  const key = keyOf(abs)
   if (existCache.get(key)) return true
   let ok = false
   try {
@@ -70,8 +129,10 @@ async function exists($: any, abs: string): Promise<boolean> {
 
 async function openFile($: any, abs: string) {
   try {
-    // explorer.exe 用系统默认程序打开; 不经过 shell, 路径里有空格和 & 也安全
-    await $.process.run(['explorer.exe', abs], { timeoutMs: 10_000 })
+    await useOS($)
+    // Windows: explorer.exe 用系统默认程序打开, 不经过 shell, 路径里有空格和 & 也安全
+    if (os === 'windows') await $.process.run(['explorer.exe', abs], { timeoutMs: 10_000 })
+    else await openPosix($, abs, os)
     $.ui.toast('已用浏览器打开: ' + baseName(abs))
   } catch (err) {
     $.ui.toast('打开失败: ' + String(err))
@@ -80,7 +141,7 @@ async function openFile($: any, abs: string) {
 
 // 把一段 markdown 里的 HTML 路径改写成 file:/// 链接; 代码块 (```) 里的不动
 async function linkify($: any, text: string): Promise<{ text: string; hrefs: string[]; found: string[] }> {
-  if (!cwd) cwd = await $.session.cwd()
+  await useOS($)
   const hrefs: string[] = []
   const found: string[] = []
   const slots: string[] = []
@@ -298,6 +359,7 @@ async function drawWithCopy($: any, e: any, props: { text: string; isFirstOfRepl
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     cwd = await $.session.cwd()
+    await useOS($)
     try {
       await $.command.register({
         name: 'open',
@@ -322,11 +384,11 @@ export const register: Register = on => {
   // 智能体写出 HTML 时记下来, /open 直接能开
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
-    if (!cwd) cwd = await $.session.cwd()
     const path = (e as any).file_path as string | undefined
     if (FILE_TOOLS.has(e.tool) && path && /\.html?$/i.test(path) && ran.deny === undefined && !ran.isError) {
+      await useOS($)
       const abs = absolute(path)
-      existCache.set(abs.toLowerCase(), true)
+      existCache.set(keyOf(abs), true)
       remember(abs)
     }
     return ran

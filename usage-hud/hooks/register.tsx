@@ -611,19 +611,77 @@ function utf16Base64(s: string): string {
   return new Uint8Array(bytes).toBase64()
 }
 
-// Claude Code 启动子进程时把窗口设成隐藏, 直接跑 explorer.exe 打开的文件夹窗口也会是隐藏的;
-// 经 cmd 的 start 转一手, 新窗口按正常方式显示 (已在本机验证)
+// ---- 跨平台 (html-shelf 里有同样一份; 带 $ 的函数必须写在本文件里, 不能 import) ----
+type OS = 'windows' | 'mac' | 'linux'
+
+// 按工作目录缓存: 同一个目录只判断一次, 换了目录 (或测试里换了系统) 再判断
+let knownOS: { key: string; os: OS } | undefined
+
+// 判断顺序: 环境变量 OS=Windows_NT (Windows 自带) → 路径像 C:\ → 有 /System/Library/CoreServices 就是 macOS → 其余按 Linux
+async function detectOS($: any, dir: string): Promise<OS> {
+  if (knownOS && knownOS.key === dir) return knownOS.os
+  let found: OS = 'linux'
+  try {
+    if ((await $.env.get('OS')) === 'Windows_NT' || /^[A-Za-z]:[\\/]/.test(dir)) found = 'windows'
+    else if (await $.fs.exists('/System/Library/CoreServices')) found = 'mac'
+  } catch {}
+  knownOS = { key: dir, os: found }
+  return found
+}
+
+const sepOf = (sys: OS) => (sys === 'windows' ? '\\' : '/')
+
+// 用户主目录: Windows 用 USERPROFILE, 其余用 HOME
+async function homeDir($: any, sys: OS): Promise<string> {
+  const h = (sys === 'windows' ? await $.env.get('USERPROFILE') : '') || (await $.env.get('HOME')) || ''
+  return h.replace(/[\\/]+$/, '')
+}
+
+// Claude Code 的配置目录: 设置了 CLAUDE_CONFIG_DIR 就用它, 否则 ~/.claude
+async function claudeDir($: any, sys: OS): Promise<string> {
+  const custom = await $.env.get('CLAUDE_CONFIG_DIR')
+  if (custom) return custom.replace(/[\\/]+$/, '')
+  const home = await homeDir($, sys)
+  return home ? home + sepOf(sys) + '.claude' : ''
+}
+
+// 跑一个命令, 退出码 0 算成功; 命令不存在会抛错, 也算失败
+async function ranOk($: any, argv: string[]): Promise<boolean> {
+  try {
+    const r = await $.process.run(argv, { timeoutMs: 10_000 })
+    return r.exitCode === 0
+  } catch {
+    return false
+  }
+}
+
+// macOS / Linux: 用系统默认程序打开 (文件夹 → 文件管理器, 网址 → 浏览器); 都不行就抛错
+async function openPosix($: any, target: string, sys: OS): Promise<void> {
+  const tries = sys === 'mac' ? [['open', target]] : [['xdg-open', target], ['gio', 'open', target], ['wslview', target]]
+  for (const argv of tries) if (await ranOk($, argv)) return
+  throw new Error(sys === 'mac' ? 'open 没能打开' : '没找到能用的 xdg-open / gio / wslview')
+}
+// ---- 跨平台 完 ----
+
+// Windows: Claude Code 启动子进程时把窗口设成隐藏, 直接跑 explorer.exe 打开的文件夹窗口也会是隐藏的;
+// 经 cmd 的 start 转一手, 新窗口按正常方式显示 (已在本机验证). macOS 用 open, Linux 用 xdg-open
 async function openProject($: any) {
   if (!(await pressOk($, 'project'))) return
   try {
-    const dir = (cwd || (await $.session.cwd())).replace(/\//g, '\\')
-    if (/^[^&^|<>()%!"]+$/.test(dir)) {
-      await $.process.run(['cmd.exe', '/d', '/c', 'start', 'usage hud', dir], { timeoutMs: 10_000 })
+    const here = cwd || (await $.session.cwd())
+    const sys = await detectOS($, here)
+    if (sys !== 'windows') {
+      await openPosix($, here, sys)
     } else {
-      const script = "Start-Process -FilePath '" + dir.replace(/'/g, "''") + "'"
-      await $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', utf16Base64(script)], {
-        timeoutMs: 20_000,
-      })
+      const dir = here.replace(/\//g, '\\')
+      if (/^[^&^|<>()%!"]+$/.test(dir)) {
+        await $.process.run(['cmd.exe', '/d', '/c', 'start', 'usage hud', dir], { timeoutMs: 10_000 })
+      } else {
+        const script = "Start-Process -FilePath '" + dir.replace(/'/g, "''") + "'"
+        await $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', utf16Base64(script)], {
+          timeoutMs: 20_000,
+        })
+      }
     }
     $.ui.toast('已打开项目文件夹')
   } catch (err) {
@@ -638,7 +696,9 @@ async function runSlash($: any, command: string, fallbackUrl?: string) {
   } catch (err) {
     if (fallbackUrl) {
       try {
-        await $.process.run(['cmd.exe', '/d', '/c', 'start', 'usage hud', fallbackUrl], { timeoutMs: 10_000 })
+        const sys = await detectOS($, cwd || (await $.session.cwd()))
+        if (sys === 'windows') await $.process.run(['cmd.exe', '/d', '/c', 'start', 'usage hud', fallbackUrl], { timeoutMs: 10_000 })
+        else await openPosix($, fallbackUrl, sys)
       } catch {}
     } else {
       $.ui.toast('/' + command + ' 运行失败: ' + String(err))
@@ -701,16 +761,19 @@ async function checkMilestones($: any) {
   } catch {}
 }
 
-// 会话记录文件: ~/.claude/projects/<工作目录里非字母数字都换成 -><会话 id>.jsonl
+// 会话记录文件: ~/.claude/projects/<工作目录里非字母数字都换成 ->/<会话 id>.jsonl (设置了 CLAUDE_CONFIG_DIR 就在它下面)
 // 会话记录按"启动时的目录"存放; 中途 cd 过的话这里猜错, 统计脚本会再按会话 id 去各项目目录里找
 type Where = { guess: string; id: string; root: string }
 async function guessTranscript($: any): Promise<Where> {
   try {
     const id = await $.session.id()
-    const home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || ''
-    const root = home ? home + '\\.claude\\projects' : ''
-    const dir = (await $.session.cwd()).replace(/[^a-zA-Z0-9]/g, '-')
-    return { guess: root ? root + '\\' + dir + '\\' + id + '.jsonl' : '', id, root }
+    const here = await $.session.cwd()
+    const sys = await detectOS($, here)
+    const sep = sepOf(sys)
+    const base = await claudeDir($, sys)
+    const root = base ? base + sep + 'projects' : ''
+    const dir = here.replace(/[^a-zA-Z0-9]/g, '-')
+    return { guess: root ? root + sep + dir + sep + id + '.jsonl' : '', id, root }
   } catch {
     return { guess: '', id: '', root: '' }
   }
@@ -726,7 +789,8 @@ async function countTokens($: any, where: Where) {
   tokState = 'counting'
   tokLive = zeroTok()
   try {
-    const script = $.plugin.root.replace(/[\\/]+$/, '') + '\\scripts\\count-tokens.js'
+    const sep = sepOf(await detectOS($, cwd || (await $.session.cwd())))
+    const script = $.plugin.root.replace(/[\\/]+$/, '') + sep + 'scripts' + sep + 'count-tokens.js'
     const r = await $.process.run(['node', script, where.guess, where.id, where.root], { timeoutMs: 120_000 })
     const j = JSON.parse(r.stdout)
     if (!j.found) throw new Error('transcript not found')

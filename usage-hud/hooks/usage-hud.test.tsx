@@ -15,7 +15,18 @@ const USAGE = {
 const SAFE = /^[\x20-\x7E\u4E00-\u9FFF，│█▏▎▍▌▋▊▉─━╸▁▂▃▄▅▆▇✓]*$/
 const CWD = 'D:\\work\\my-app'
 
-function mocks(on: any, calls: { run: string[][]; cmd: string[] }) {
+// 模拟三种系统: 工作目录、环境变量、是不是 macOS、打不开的命令 (退出码 3)
+// Windows 这里故意不给 OS 变量, 靠 C:\ 这种路径认出来
+type Sys = { cwd: string; env: Record<string, string>; mac?: boolean; broken?: string[] }
+const WIN: Sys = { cwd: CWD, env: { USERPROFILE: 'C:\\Users\\me' } }
+const MAC: Sys = { cwd: '/Users/me/my-app', env: { HOME: '/Users/me' }, mac: true }
+const LINUX: Sys = {
+  cwd: '/home/me/my-app',
+  env: { HOME: '/home/me', CLAUDE_CONFIG_DIR: '/home/me/.config/claude' },
+  broken: ['xdg-open'],
+}
+
+function mocks(on: any, calls: { run: string[][]; cmd: string[] }, sys: Sys = WIN) {
   on('clock.now', async () => ({ value: Date.now() }))
   on('clock.every', async () => ({ value: undefined }))
   on('ui.render', async ($: any, e: any) => $.ui.resolve(e).Text({ children: ['engine-base'] }))
@@ -24,7 +35,9 @@ function mocks(on: any, calls: { run: string[][]; cmd: string[] }) {
   on('session.start', async ($: any, e: any) => ({ cwd: e.cwd }))
   on('session.usage', async () => ({ value: USAGE }))
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
-  on('session.cwd', async () => ({ value: CWD }))
+  on('session.cwd', async () => ({ value: sys.cwd }))
+  // 测试跑在 Windows 上, 引擎可能把 /System/... 规整成本机写法, 只比结尾
+  on('fs.exists', async ($: any, e: any) => ({ value: !!sys.mac && /[\\/]System[\\/]Library[\\/]CoreServices$/.test(String(e.path ?? e)) }))
   on('settings.read', async () => ({ value: { effortLevel: 'medium' } }))
   on('agent.list', async () => ({ value: [{ id: 'a', description: 'x', type: 'fork', status: 'running' }] }))
   on('command.register', async ($: any, e: any) => ({ value: { command: e.name } }))
@@ -33,10 +46,11 @@ function mocks(on: any, calls: { run: string[][]; cmd: string[] }) {
     return { value: {} }
   })
   on('session.id', async () => ({ value: 'abc-123' }))
-  on('env.get', async ($: any, e: any) => ({ value: (e.name ?? e) === 'USERPROFILE' ? 'C:\\Users\\me' : undefined }))
+  on('env.get', async ($: any, e: any) => ({ value: sys.env[String(e.name ?? e)] }))
   on('process.run', async ($: any, e: any) => {
     const argv: string[] = e.argv ?? e
     calls.run.push(argv)
+    if (sys.broken?.includes(argv[0])) return { value: { exitCode: 3, stdout: '', stderr: '' } }
     const s = JSON.stringify(argv)
     if (argv[0] === 'node') {
       // 统计脚本: 与本机实测的一个会话同量级
@@ -47,10 +61,10 @@ function mocks(on: any, calls: { run: string[][]; cmd: string[] }) {
   })
 }
 
-async function start($: any, on: any) {
+async function start($: any, on: any, sys: Sys = WIN) {
   const calls = { run: [] as string[][], cmd: [] as string[] }
-  mocks(on, calls)
-  await $.session.start({ cwd: CWD } as any)
+  mocks(on, calls, sys)
+  await $.session.start({ cwd: sys.cwd } as any)
   return calls
 }
 
@@ -201,6 +215,33 @@ test('token 统计: 读会话记录 (含子代理) 得到总数和输出数；�
   // 1646 + 716680 + 332073078 + 12632343 = 345,423,747
   expect(text).toContain('345.4M')
   expect(text).toContain('out 717k')
+})
+
+test('macOS: 会话记录在 ~/.claude 下、路径用 /；点项目名用 open 打开', async ($, on) => {
+  const calls = await start($, on, MAC)
+  const node = calls.run.find(a => a[0] === 'node')
+  expect(node?.[1]).toMatch(/\/scripts\/count-tokens\.js$/)
+  expect(node?.[2]).toBe('/Users/me/.claude/projects/-Users-me-my-app/abc-123.jsonl')
+  const ui = await mountHint($, 'terminal', 140)
+  await ui.press({ key: 'btn-project' })
+  expect(calls.run.filter(a => a[0] === 'open')).toEqual([['open', '/Users/me/my-app']])
+  expect(calls.run.some(a => a[0] === 'cmd.exe')).toBe(false)
+  await ui.unmount()
+})
+
+test('Linux: 设置了 CLAUDE_CONFIG_DIR 就在它下面找会话记录；xdg-open 打不开时改用 gio open', async ($, on) => {
+  const calls = await start($, on, LINUX)
+  const node = calls.run.find(a => a[0] === 'node')
+  expect(node?.[2]).toBe('/home/me/.config/claude/projects/-home-me-my-app/abc-123.jsonl')
+  expect(node?.[4]).toBe('/home/me/.config/claude/projects')
+  const ui = await mountHint($, 'terminal', 140)
+  await ui.press({ key: 'btn-project' })
+  const opens = calls.run.filter(a => ['xdg-open', 'gio', 'wslview'].includes(a[0]))
+  expect(opens).toEqual([
+    ['xdg-open', '/home/me/my-app'],
+    ['gio', 'open', '/home/me/my-app'],
+  ])
+  await ui.unmount()
 })
 
 async function mountDesktop($: any, cols: number, isWorking = false) {
