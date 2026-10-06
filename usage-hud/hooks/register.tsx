@@ -1034,8 +1034,8 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
     return { text: '✓ 待命', color: DIM }
   }
 
-  // ---------- 精简版: 1 行 ----------
-  if (layout === 'compact' || W < 96) {
+  // ---------- 精简版: 1 行 (不到 66 列, 或 /hud 切到精简) ----------
+  if (layout === 'compact' || W < 66) {
     const bw = W >= 120 ? 8 : W >= 100 ? 6 : 4
     const st = statusText(18)
     const crab = isTerm
@@ -1089,11 +1089,14 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
     )
   }
 
-  // ---------- 完整版: 螃蟹 + 3 行 x 3 列 ----------
-  // 左右各留 HPAD 格; 三列取整后剩下的零头平分到两边, 让面板两端留空一样
+  // ---------- 完整版: 螃蟹 + 3 行 x 3 列 (96 列以上) ----------
+  // ---------- 中等版: 螃蟹 + 3 行 x 2 列 (66~95 列, 比如 macOS 默认的 80 列窗口) ----------
+  //   左列 模型 / 项目 / 状态, 右列 上下文 / 5小时 / 本周; 本会话、工具、token 放不下, 只在完整版里显示
+  // 左右各留 HPAD 格; 各列取整后剩下的零头平分到两边, 让面板两端留空一样
+  const nCols = W >= 96 ? 3 : 2
   const avail = W - SPRITE_W - 2 - HPAD * 2
-  const cw = Math.floor((avail - 2 * GAP) / 3)
-  const A = cw * 3 + GAP * 2
+  const cw = Math.floor((avail - (nCols - 1) * GAP) / nCols)
+  const A = cw * nCols + GAP * (nCols - 1)
   const marginL = HPAD + Math.floor((avail - A) / 2)
   const marginR = HPAD + Math.ceil((avail - A) / 2)
   const inner = cw - LABEL_W - 1
@@ -1181,6 +1184,16 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
     ],
   ]
 
+  // 中等版: 左列放文字 (模型 / 项目 / 状态), 右列放三根用量条
+  const rows =
+    nCols === 3
+      ? [r1, r2, r3]
+      : [
+          [r1[0], r2[0]],
+          [r1[1], r2[1]],
+          [r3[0], r2[2]],
+        ]
+
   const gridRow = (key: string, cells: any[][]) => (
     <Box key={key} flexDirection="row" columnGap={GAP} height={1}>
       {cells.map((parts, i) => cell(els, key + 'c' + i, cw, parts))}
@@ -1201,9 +1214,9 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
         {sprite}
       </Box>
       <Box key="info" flexDirection="column" width={A} flexShrink={0}>
-        {gridRow('r1', r1)}
-        {gridRow('r2', r2)}
-        {gridRow('r3', r3)}
+        {gridRow('r1', rows[0])}
+        {gridRow('r2', rows[1])}
+        {gridRow('r3', rows[2])}
       </Box>
     </Box>
   )

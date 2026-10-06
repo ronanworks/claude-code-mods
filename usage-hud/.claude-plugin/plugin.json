@@ -1,6 +1,6 @@
 {
   "name": "usage-hud",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "description": "输入框下方的用量面板：会按工具做动作的像素小螃蟹 + 三列对齐的模型/用量/状态网格（Windows / macOS / Linux）",
   "author": { "name": "Ronan" },
   "repository": "https://github.com/ronanworks/claude-code-mods",

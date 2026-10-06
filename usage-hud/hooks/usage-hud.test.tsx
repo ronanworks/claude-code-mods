@@ -1,4 +1,4 @@
-import { test, expect } from 'claude-code/testing'
+import { test, expect, mock } from 'claude-code/testing'
 import { previewScene } from './register'
 
 const USAGE = {
@@ -28,6 +28,8 @@ const LINUX: Sys = {
 const WSL: Sys = { cwd: '/home/me/my-app', env: { HOME: '/home/me', WSL_DISTRO_NAME: 'Ubuntu-22.04' }, broken: ['wslview'] }
 
 function mocks(on: any, calls: { run: string[][]; cmd: string[] }, sys: Sys = WIN) {
+  // 存储用内存里的假存储: 测试里的 /hud top 不能写进用户真实的偏好文件
+  mock.store(on)
   on('clock.now', async () => ({ value: Date.now() }))
   on('clock.every', async () => ({ value: undefined }))
   on('ui.render', async ($: any, e: any) => $.ui.resolve(e).Text({ children: ['engine-base'] }))
@@ -153,9 +155,27 @@ test('点项目名经 cmd start 打开文件夹；双击只开一次；点本周
   await ui.unmount()
 })
 
-test('窄终端用精简版；桌面端不画面板，只留引擎自己的提示行', async ($, on) => {
+test('80 列 (macOS 默认窗口) 用中等版: 完整螃蟹 + 3 行 x 2 列，右列是三根用量条', async ($, on) => {
   await start($, on)
-  const t = await mountHint($, 'terminal', 90)
+  for (const cols of [82, 90]) {
+    const ui = await mountHint($, 'terminal', cols)
+    const r: any = await ui.find({ type: 'Raster' })
+    expect(r?.props?.rows).toBe(3)
+    const boxes = (await ui.findAll({ type: 'Box' })).filter((b: any) => /^r\dc\d$/.test(b.key ?? ''))
+    const keys = boxes.map((b: any) => b.key).sort()
+    expect(keys).toEqual(['r1c0', 'r1c1', 'r2c0', 'r2c1', 'r3c0', 'r3c1'])
+    const w = boxes.map((b: any) => b.props.width)
+    expect(new Set(w).size).toBe(1)
+    const all = await strings(ui)
+    for (const s of all) expect(SAFE.test(s) ? 'ok' : 'unsafe: ' + s).toBe('ok')
+    for (const want of ['模型', '项目', '状态', '上下文', '5小时', '本周', 'my-app']) expect(all.some(s => s.includes(want)) ? 'ok' : 'missing ' + want).toBe('ok')
+    await ui.unmount()
+  }
+})
+
+test('很窄的终端用一行精简版；桌面端不画面板，只留引擎自己的提示行', async ($, on) => {
+  await start($, on)
+  const t = await mountHint($, 'terminal', 62)
   const r: any = await t.find({ type: 'Raster' })
   expect(r?.props?.rows).toBe(1)
   for (const s of await strings(t)) expect(SAFE.test(s) ? 'ok' : 'unsafe: ' + s).toBe('ok')
