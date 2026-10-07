@@ -1,4 +1,5 @@
-// 像素螃蟹: 逐行照搬 usage-hud/hooks/register.tsx 的 "像素画" 一节 (canvas/put/rect/encode/drawCrab/scenePx/miniPx)
+// 像素螃蟹: 逐行照搬 usage-hud/hooks/register.tsx (0.12.0) 的 "像素画" 一节
+// (canvas/put/rect/encode/drawCrab/bodyColor/KID_TALL/KID_FLAT/stamp/drawKids/scenePx/miniPx) 和颜色表 COL
 // 只去掉了类型标注; 模块变量 frame 改成 setFrame() 设置。check-crab.mjs 会拿源码逐帧比对, 保证一模一样
 export const SPRITE_W = 15 // 12 列螃蟹 + 3 列道具
 export const MINI_W = 8
@@ -20,6 +21,12 @@ export const COL = {
   land: 0x4ade80,
   gear: 0xa1a1aa,
   thought: 0xa1a1aa,
+  shades: 0x09090b, // 墨镜镜片
+  bridge: 0x52525b, // 墨镜鼻梁
+  alarm: 0xef4444, // 慌张的 "!"
+  kid: 0xf2a07b, // 小螃蟹用浅一号的颜色
+  kidEye: 0xf5f5f4, // 小螃蟹的眼睛用浅色
+  kidLeg: 0xa4553d,
 }
 export const DEF = 0x01000000
 
@@ -98,13 +105,49 @@ function bodyColor(pct) {
   return pct >= 80 ? COL.hot : COL.body
 }
 
-// s = { working, kind, pct, celebrating, sleeping, agents }
+// 子代理小螃蟹 (3 列宽, 画在右侧 x 12-14): C = 钳子和身体, E = 眼睛, L = 腿, . = 空; 两帧交替 = 腿在走
+// 1-2 只用 3x3 (钳子 / 身体 + 眼睛 / 腿), 3 只时放不下, 改 3x2 (身体 + 眼睛 / 腿)
+const KID_TALL = [
+  ['C.C', 'CEC', 'L.L'],
+  ['C.C', 'CEC', '.L.'],
+]
+const KID_FLAT = [
+  ['CEC', 'L.L'],
+  ['CEC', '.L.'],
+]
+function stamp(p, x0, y0, rows) {
+  rows.forEach((row, dy) => {
+    for (let dx = 0; dx < row.length; dx++) {
+      const ch = row[dx]
+      const c = ch === 'C' ? COL.kid : ch === 'E' ? COL.kidEye : ch === 'L' ? COL.kidLeg : -1
+      if (c >= 0) put(p, x0 + dx, y0 + dy, c)
+    }
+  })
+}
+function drawKids(p, n, f) {
+  const step = Math.floor(f / 2)
+  if (n === 1) {
+    // 一只: 一边走一边上下跳 (占 4 行里的 3 行)
+    stamp(p, 12, [2, 1, 2, 3][step % 4], KID_TALL[step % 2])
+  } else if (n === 2) {
+    stamp(p, 12, 0, KID_TALL[step % 2])
+    stamp(p, 12, 3, KID_TALL[(step + 1) % 2])
+  } else if (n >= 3) {
+    for (let i = 0; i < 3; i++) stamp(p, 12, i * 2, KID_FLAT[(step + i) % 2])
+  }
+}
+
+// s = { working, kind, pct, celebrating, sleeping, agents, mood }
 export function scenePx(s) {
   const p = canvas(SPRITE_W, 6)
   const f = frame
   const t = Math.floor(f / 2)
+  const md = s.mood ?? 'normal'
+  const nKids = Math.min(3, Math.max(0, s.agents))
+  const zoneFree = nKids === 0 // 右侧 3 列有子代理时让给小螃蟹
   const o = { bob: 0, legs: 0, eyes: 'open', look: 0, armL: 'out', armR: 'out', body: bodyColor(s.pct) }
-  let props = true
+  let shades = false
+  let bigBang = false // 右侧的大 "!"
 
   if (s.celebrating) {
     o.armL = 'up'
@@ -112,9 +155,8 @@ export function scenePx(s) {
     o.bob = t % 2
     const spots = [[12, 0], [14, 1], [13, 3], [12, 5], [14, 4], [13, 1], [1, 0], [10, 0]]
     spots.forEach(([x, y], i) => {
-      if ((i + f) % 3 === 0) put(p, x, y, COL.spark)
+      if ((i + f) % 3 === 0 && (zoneFree || x < 12)) put(p, x, y, COL.spark)
     })
-    props = false
   } else if (s.working) {
     o.legs = t % 4
     o.bob = t % 2
@@ -123,94 +165,148 @@ export function scenePx(s) {
         o.look = 1
         const dots = [[12, 4], [13, 2], [14, 0]]
         const n = Math.floor(f / 3) % 4
-        for (let i = 0; i < n; i++) put(p, dots[i][0], dots[i][1], COL.thought)
+        if (zoneFree) for (let i = 0; i < n; i++) put(p, dots[i][0], dots[i][1], COL.thought)
         break
       }
       case 'read': {
         o.look = 1
-        rect(p, 12, 1, 3, 4, COL.paper)
-        rect(p, 12, 1 + (t % 4), 3, 1, COL.scan)
+        if (zoneFree) {
+          rect(p, 12, 1, 3, 4, COL.paper)
+          rect(p, 12, 1 + (t % 4), 3, 1, COL.scan)
+        }
         break
       }
       case 'edit': {
         o.look = 1
         o.armR = f % 2 ? 'up' : 'out'
-        rect(p, 12, 1, 3, 4, COL.paper)
-        const k = t % 13
-        for (let i = 0; i < k; i++) put(p, 12 + (i % 3), 1 + Math.floor(i / 3), COL.ink)
+        if (zoneFree) {
+          rect(p, 12, 1, 3, 4, COL.paper)
+          const k = t % 13
+          for (let i = 0; i < k; i++) put(p, 12 + (i % 3), 1 + Math.floor(i / 3), COL.ink)
+        }
         break
       }
       case 'bash': {
         o.armL = f % 2 ? 'up' : 'out'
         o.armR = f % 2 ? 'out' : 'up'
-        rect(p, 12, 1, 3, 4, COL.term)
-        put(p, 12, 2, COL.cursor)
-        if (f % 4 < 2) put(p, 13, 4, COL.cursor)
+        if (zoneFree) {
+          rect(p, 12, 1, 3, 4, COL.term)
+          put(p, 12, 2, COL.cursor)
+          if (f % 4 < 2) put(p, 13, 4, COL.cursor)
+        }
         break
       }
       case 'web': {
         o.look = 1
-        const ring = [[13, 1], [14, 2], [13, 3], [12, 2]]
-        for (const [x, y] of ring) put(p, x, y, COL.sea)
-        put(p, 13, 2, COL.sea)
-        const [lx, ly] = ring[t % 4]
-        put(p, lx, ly, COL.land)
+        if (zoneFree) {
+          const ring = [[13, 1], [14, 2], [13, 3], [12, 2]]
+          for (const [x, y] of ring) put(p, x, y, COL.sea)
+          put(p, 13, 2, COL.sea)
+          const [lx, ly] = ring[t % 4]
+          put(p, lx, ly, COL.land)
+        }
         break
       }
       case 'agent':
         break
       default: {
-        const orbit = [[12, 1], [13, 1], [14, 1], [14, 2], [14, 3], [13, 3], [12, 3], [12, 2]]
-        put(p, 13, 2, COL.gear)
-        const [gx, gy] = orbit[f % 8]
-        put(p, gx, gy, COL.gear)
+        if (zoneFree) {
+          const orbit = [[12, 1], [13, 1], [14, 1], [14, 2], [14, 3], [13, 3], [12, 3], [12, 2]]
+          put(p, 13, 2, COL.gear)
+          const [gx, gy] = orbit[f % 8]
+          put(p, gx, gy, COL.gear)
+        }
       }
     }
-    props = s.kind === 'agent'
+  } else if (md === 'panic') {
+    // 闲置时慌张: 双钳举起, 左右发抖, 腿乱蹬; 右侧空着就竖一个大 "!"
+    o.armL = 'up'
+    o.armR = 'up'
+    o.look = f % 2 ? 1 : -1
+    o.legs = f % 4
+    bigBang = zoneFree
   } else if (s.sleeping) {
     o.eyes = 'closed'
     o.bob = Math.floor(f / 8) % 2 // 慢慢呼吸
-    const z = Math.floor(f / 3)
-    put(p, 13, 5 - (z % 6), COL.bubble)
-    put(p, 14, 5 - ((z + 3) % 6), COL.bubble)
+    if (zoneFree) {
+      const z = Math.floor(f / 3)
+      put(p, 13, 5 - (z % 6), COL.bubble)
+      put(p, 14, 5 - ((z + 3) % 6), COL.bubble)
+    }
   } else {
     const cyc = f % 160
-    if (f % 30 === 0) o.eyes = 'closed' // 眨眼
-    if (cyc >= 60 && cyc < 68) o.look = -1 // 左右张望
-    else if (cyc >= 68 && cyc < 76) o.look = 1
+    if (md === 'chill') shades = true // 戴墨镜: 不眨眼, 不张望
+    else {
+      if (f % 30 === 0) o.eyes = 'closed' // 眨眼
+      if (cyc >= 60 && cyc < 68) o.look = -1 // 左右张望
+      else if (cyc >= 68 && cyc < 76) o.look = 1
+    }
     if (cyc >= 120 && cyc < 136) o.armR = Math.floor(f / 3) % 2 ? 'up' : 'out' // 挥手
   }
 
   drawCrab(p, o)
 
-  // 子代理: 身边跳动的小螃蟹 (最多 3 只)
-  if (props && s.agents > 0) {
-    for (let i = 0; i < Math.min(3, s.agents); i++) {
-      const up = (f + i * 2) % 4 < 2 ? 1 : 0
-      put(p, 12 + i, 5 - up, COL.body)
-      put(p, 12 + i, 4 - up, i % 2 ? COL.body : mix(COL.body, COL.eye, 0.3))
+  if (shades) {
+    const y = o.bob + 1
+    rect(p, 3, y, 2, 1, COL.shades)
+    rect(p, 5, y, 2, 1, COL.bridge)
+    rect(p, 7, y, 2, 1, COL.shades)
+  }
+  if (bigBang) {
+    const c = f % 4 < 2 ? COL.alarm : COL.spark
+    put(p, 13, 0, c)
+    put(p, 13, 1, c)
+    put(p, 13, 3, c)
+  }
+  // 头边 (x=1, 第 0-1 行, 任何姿势下都空着): 上下文告急 / 冒汗 -> 汗滴; 慌张 -> 汗滴和红色 "!" 交替
+  if (!s.celebrating) {
+    const sweat = s.pct >= 80 || md === 'sweat' || md === 'panic'
+    if (md === 'panic' && !bigBang && t % 4 >= 2) {
+      put(p, 1, 0, COL.alarm)
+      put(p, 1, 1, COL.alarm)
+    } else if (sweat) {
+      const d = t % 4
+      if (d < 2) put(p, 1, d, COL.sweat)
     }
   }
-  // 上下文告急: 头边冒汗
-  if (s.pct >= 80 && !s.celebrating) {
-    const d = t % 4
-    if (d < 2) put(p, 1, d, COL.sweat)
-  }
+  // 子代理小螃蟹最后画: 盖在任何道具 / 闪光 / 泡泡上面
+  if (nKids) drawKids(p, nKids, f)
   return p
 }
 
+// 精简版的一行小螃蟹 (8 列 x 2 像素); 有子代理时身体缩成 6 列, 第 8 列放跳动的小点 (宽度不变)
 export function miniPx(s) {
   const p = canvas(MINI_W, 2)
   const f = frame
   const t = Math.floor(f / 2)
+  const md = s.mood ?? 'normal'
   const body = bodyColor(s.pct)
-  rect(p, 0, 0, MINI_W, 1, body)
-  const closed = s.sleeping || (!s.working && f % 30 === 0)
+  const nKids = Math.min(3, Math.max(0, s.agents))
+  const bw = nKids ? 6 : MINI_W
+  rect(p, 0, 0, bw, 1, body)
+  const idle = !s.working && !s.celebrating
+  const closed = s.sleeping || (idle && md !== 'chill' && f % 30 === 0)
   const look = s.working ? 1 : 0
-  const eye = closed ? mix(body, COL.eye, 0.45) : COL.eye
-  put(p, 2 + look, 0, eye)
-  put(p, 5 + look, 0, eye)
-  const legs = s.celebrating ? [0, 7] : s.working && t % 2 ? [0, 2, 5, 7] : [1, 3, 4, 6]
+  const ex = nKids ? [1, 4] : [2, 5]
+  let eye = closed ? mix(body, COL.eye, 0.45) : COL.eye
+  if (md === 'panic' && !s.celebrating && f % 4 < 2) eye = COL.spark // 慌张: 眼睛黄红闪
+  if (idle && !s.sleeping && md === 'chill') rect(p, ex[0], 0, ex[1] - ex[0] + 1, 1, COL.shades) // 墨镜
+  else {
+    put(p, ex[0] + look, 0, eye)
+    put(p, ex[1] + look, 0, eye)
+  }
+  const scramble = md === 'panic' && !s.celebrating
+  const wide = s.celebrating ? [0, 7] : (s.working || scramble) && t % 2 ? [0, 2, 5, 7] : [1, 3, 4, 6]
+  const legs = nKids ? wide.map(x => Math.min(5, Math.round((x * 5) / 7))) : wide
   for (const x of legs) put(p, x, 1, body)
+  // 冒汗: 左下角一颗蓝色汗滴闪
+  if (!s.celebrating && (s.pct >= 80 || md === 'sweat' || md === 'panic') && t % 4 < 2) put(p, 0, 1, COL.sweat)
+  // 子代理: 第 8 列; 1 只 = 一个点上下跳, 2 只以上 = 两格都亮, 3 只再加闪
+  if (nKids === 1) put(p, 7, t % 2, COL.kid)
+  else if (nKids >= 2) {
+    const hi = nKids >= 3 && f % 4 < 2 ? COL.kidEye : COL.kid
+    put(p, 7, 0, t % 2 ? COL.kid : hi)
+    put(p, 7, 1, t % 2 ? hi : COL.kidLeg)
+  }
   return p
 }

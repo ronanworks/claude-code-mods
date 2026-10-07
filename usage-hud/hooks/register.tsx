@@ -1685,7 +1685,7 @@ async function buildAgentsPane($: any, els: any, W: number) {
       ))}
     </Box>
   )
-  // 宽面板一行一个: 状态 | 描述 | 时长 | 最后动静 | 最后工具 | 工具数
+  // 宽面板一行一个: 状态 | 描述 | 时长 | 最后动静 | 最后工具 | 工具 (次数; 表头不能超过 FIX.n 格, 否则被截成 "工..")
   const FIX = { st: 8, ran: 7, idle: 9, tool: 14, n: 5 }
   const descW = Math.max(8, width - (FIX.st + FIX.ran + FIX.idle + FIX.tool + FIX.n) - 5)
   const row = (k: Kid) => {
@@ -1731,7 +1731,7 @@ async function buildAgentsPane($: any, els: any, W: number) {
           ['时长', FIX.ran, DIM],
           ['最后动静', FIX.idle, DIM],
           ['最后工具', FIX.tool, DIM],
-          ['工具数', FIX.n, DIM],
+          ['工具', FIX.n, DIM],
         ]),
       ]
     : []

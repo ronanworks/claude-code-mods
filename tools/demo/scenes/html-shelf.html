@@ -4,187 +4,189 @@
 <meta charset="utf-8">
 <title>html-shelf demo</title>
 <style>
-  .browser { position: absolute; border-radius: 10px; overflow: hidden; background: #fff; z-index: 20;
-    box-shadow: 0 0 0 1px rgba(0,0,0,0.25), 0 30px 80px rgba(0,0,0,0.65), 0 10px 28px rgba(0,0,0,0.45); }
-  .b-tabs { height: 36px; background: #dfe3e8; display: flex; align-items: flex-end; padding-left: 10px; position: relative; }
-  .b-tab { height: 29px; background: #fff; border-radius: 8px 8px 0 0; display: flex; align-items: center; gap: 8px; padding: 0 12px; min-width: 200px;
-    font-size: 12px; color: #202124; box-sizing: border-box; }
-  .b-tab .fav { width: 14px; height: 14px; border-radius: 3px; background: #d97757; }
-  .b-tab .x { margin-left: auto; color: #5f6368; font-size: 10px; }
-  .b-ctl { position: absolute; right: 0; top: 0; height: 36px; display: flex; }
-  .b-ctl div { width: 42px; height: 36px; display: flex; align-items: center; justify-content: center; }
-  .b-bar { height: 40px; background: #fff; display: flex; align-items: center; gap: 12px; padding: 0 12px; border-bottom: 1px solid #e3e3e3; }
-  .b-nav { color: #5f6368; font-size: 15px; width: 16px; text-align: center; }
-  .b-url { flex: 1; height: 28px; border-radius: 14px; background: #f1f3f4; display: flex; align-items: center; padding: 0 14px; gap: 8px;
-    font-size: 12.5px; color: #202124; white-space: nowrap; overflow: hidden; }
-  .b-url .lock { color: #5f6368; font-size: 11px; }
-  .b-url .dim { color: #70757a; }
-  .page { padding: 22px 26px 24px; background: #fafaf9; color: #1c1917; height: 100%; box-sizing: border-box; }
-  .p-head { display: flex; align-items: center; gap: 10px; }
-  .p-logo { width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, #e08a68, #c2603f); }
-  .p-title { font-size: 19px; font-weight: 700; letter-spacing: 0.2px; }
-  .p-sub { margin-left: auto; font-size: 12px; color: #78716c; }
-  .kpis { display: flex; gap: 12px; margin-top: 16px; }
-  .kpi { flex: 1; background: #fff; border: 1px solid #ece9e6; border-radius: 10px; padding: 10px 12px; }
-  .kpi .k { font-size: 11.5px; color: #78716c; }
-  .kpi .v { font-size: 21px; font-weight: 700; margin-top: 3px; font-family: "Segoe UI", sans-serif; }
-  .kpi .v small { font-size: 12px; font-weight: 600; color: #78716c; margin-left: 3px; }
-  .kpi .d { font-size: 11.5px; font-weight: 600; color: #15803d; margin-top: 2px; }
-  .chart { margin-top: 14px; background: #fff; border: 1px solid #ece9e6; border-radius: 10px; padding: 12px 14px 12px; }
-  .chart .ct { font-size: 12.5px; font-weight: 600; color: #44403c; margin-bottom: 9px; }
-  .row { display: flex; align-items: center; gap: 10px; height: 22px; }
-  .row .rl { width: 46px; font-size: 11.5px; color: #78716c; }
-  .row .track { flex: 1; height: 12px; border-radius: 6px; background: #f1efed; position: relative; overflow: hidden; }
-  .row .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px; background: linear-gradient(90deg, #f0b49b, #d97757); }
-  .row .rv { width: 52px; text-align: right; font-size: 11.5px; font-weight: 600; color: #44403c; font-family: "Segoe UI", sans-serif; }
+  .viewer { position: absolute; border-radius: 10px; overflow: hidden; background: #202020; z-index: 20; display: none;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.12), 0 30px 80px rgba(0,0,0,0.65), 0 10px 28px rgba(0,0,0,0.45); }
+  .v-bar { height: 36px; display: flex; align-items: center; padding-left: 14px; color: #e6e6e6; font-size: 12.5px; position: relative; gap: 10px; }
+  .v-bar .ic { width: 14px; height: 11px; border-radius: 2px; border: 1.5px solid #9ad0ff; box-sizing: border-box; }
+  .v-ctl { position: absolute; right: 0; top: 0; height: 36px; display: flex; }
+  .v-ctl div { width: 42px; height: 36px; display: flex; align-items: center; justify-content: center; }
+  .v-tools { height: 34px; display: flex; align-items: center; justify-content: center; gap: 22px; color: #bdbdbd; font-size: 12px; border-bottom: 1px solid #2c2c2c; }
+  .v-tools b { font-weight: 600; color: #e6e6e6; }
+  .v-img { position: relative; margin: 14px auto 0; width: 520px; height: 292px; border-radius: 3px; overflow: hidden;
+    background: linear-gradient(180deg, #2b1d4d 0%, #6b3a73 38%, #d9775a 70%, #f2b36d 86%, #3a2a36 86.2%, #1c1720 100%); }
+  .v-img .sun { position: absolute; left: 336px; top: 128px; width: 86px; height: 86px; border-radius: 50%;
+    background: radial-gradient(circle, #ffe2a8 0%, #ffc777 55%, rgba(255,199,119,0) 72%); }
+  .v-img .m1 { position: absolute; left: -30px; right: -30px; bottom: 40px; height: 120px; background: #3d2547;
+    clip-path: polygon(0 100%, 8% 52%, 17% 70%, 29% 22%, 41% 64%, 52% 40%, 63% 72%, 76% 30%, 88% 62%, 100% 44%, 100% 100%); }
+  .v-img .m2 { position: absolute; left: -30px; right: -30px; bottom: 40px; height: 74px; background: #251a2e;
+    clip-path: polygon(0 100%, 0 60%, 12% 38%, 24% 66%, 37% 48%, 50% 74%, 62% 34%, 75% 58%, 88% 42%, 100% 70%, 100% 100%); }
+  .v-img .floor { position: absolute; left: 0; right: 0; bottom: 0; height: 40px;
+    background: repeating-linear-gradient(90deg, rgba(242,179,109,0.20) 0 1px, transparent 1px 34px), linear-gradient(180deg, #2a1f2e, #141016); }
+  .v-foot { height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; color: #9b9b9b; font-size: 12px; }
 </style>
 </head>
 <body>
 <script type="module">
-import { Grid, drawGrid } from '../lib/cells.js'
-import { makeStage, termWindow, makePointer, pathAt, seg, easeOut, easeOutBack, easeInOut, lerp } from '../lib/stage.js'
+import { Grid, drawGrid, metrics } from '../lib/cells.js'
+import { makeStage, termWindow, makePointer, makeToast, toastK, canvasLayer, pathAt, seg, easeOut, easeOutBack, easeInOut, lerp } from '../lib/stage.js'
 import { transcript, inputBox, hint, C } from '../lib/claude.js'
 
-const COLS = 96, ROWS = 16, CW = 10, CH = 20, SIZE = 17.06
-const W = 1200, H = 500
-const FPS = 20, DURATION = 9.2
+const COLS = 96, ROWS = 22, CW = 10, CH = 20, SIZE = 17.06
+const W = 1200, H = 586
+const FPS = 20, DURATION = 11.0
 
-// ---------------- 代码块卡片 (html-shelf 新样式) ----------------
-const CARD = {
-  top: 5, // 标题栏所在行
-  col0: 2, // 卡片从 "● " 之后开始, 占满消息宽度
-  col1: COLS,
-  lang: 'bash',
-  // 每行: [文字, 颜色] 片段 (语法高亮的配色是近似值)
-  code: [
-    [['npm', 'cmd'], [' run bench ', 'plain'], ['--', 'flag'], [' '], ['--runs', 'flag'], [' '], ['5', 'num']],
-    [['node', 'cmd'], [' scripts/report.js ', 'plain'], ['--out', 'flag'], [' docs/report.html', 'plain']],
-  ],
-}
-const SYN = { cmd: 'rgb(110,168,254)', flag: 'rgb(229,160,110)', num: 'rgb(229,160,110)', plain: 'rgb(222,222,222)' }
-const TITLE_BG = 'rgb(55,55,55)', TITLE_BG_HOT = 'rgb(70,70,70)', CODE_BG = 'rgb(38,38,38)'
-const COPY_DIM = 'rgb(118,118,118)', ORANGE = 'rgb(215,119,87)', GREEN = 'rgb(78,186,101)'
-const cardRows = () => [CARD.top, CARD.top + 1 + CARD.code.length] // [第一行, 最后一行]
-const copyCols = label => {
-  const w = label === '复制' ? 4 : 8
-  return [CARD.col1 - 2 - w, CARD.col1 - 2]
-}
+// ---------------- html-shelf 0.6 的画法 (按 register.tsx; 颜色是主题色) ----------------
+const TITLE_BG = 'rgb(55,55,55)' // userMessageBackground
+const TITLE_BG_HOT = 'rgb(70,70,70)' // userMessageBackgroundHover
+const CODE_BG = 'rgb(38,38,38)' // composerSidebarBackground
+const DIMBTN = 'rgb(118,118,118)' // Button plain dimColor (近似)
+const ORANGE = 'rgb(215,119,87)' // hover: { color: 'claude', bold: true }
+const GREEN = 'rgb(78,186,101)' // success
+const INVERT = { fg: '#1c1917', bg: ORANGE, bold: true } // 指针正压在按钮上: 反色
+// 代码高亮 (引擎的 <Code> 画的, 配色近似)
+const SYN = { cmd: 'rgb(110,168,254)', plain: 'rgb(222,222,222)' }
+
+// 行号
+const R_REPLY1 = 3, R_CARD = 5, R_REPLY2 = 9, R_LIST = 11, R_TOOL = 15, R_INPUT = 18
+const CARD = { c0: 2, c1: COLS } // 卡片占满消息宽度 ("● " 之后)
+// 标题栏右侧: [填入] 两格空 [复制] , 右内边距 2
+const COPY_COLS = [COLS - 2 - 4, COLS - 2]
+const FILL_COLS = [COPY_COLS[0] - 2 - 4, COPY_COLS[0] - 2]
+// "复制全文": 回复第一行是正文 -> right = 0; 小底块左右各 1 格内边距
+const CHIP = { c0: COLS - 10, c1: COLS }
+const LIST = [
+  ['docs/report.pdf', '跑分报告'],
+  ['renders/shot-01.png', '第一张渲染图'],
+  ['renders/', '全部渲染图'],
+]
+const TOOL = { name: 'Write', args: 'docs/notes.md', result: 'Wrote 18 lines to docs/notes.md' }
+const OPEN_COL = 2 + TOOL.name.length + TOOL.args.length + 2 + 2 // 工具行后面 marginLeft 2
 
 // ---------------- 剧情 ----------------
-const CLICK_COPY = 1.95
+const CLICK_FILL = 1.6
+const CLICK_PNG = 3.15
+const CLICK_ALL = 6.8
 const COPIED_MS = 1800
-const CLICK_LINK = 5.25
-const LINK = { row: 10, text: 'docs/report.html' }
-const LINK_COL = 2 + [...'报告在 '].reduce((w, ch) => w + (ch.charCodeAt(0) > 0x2e80 ? 2 : 1), 0)
+const FADE_AT = 10.6
 
 makeStage(W, H)
 const winX = Math.round((W - (COLS * CW + 24)) / 2)
-const win = termWindow({ x: winX, y: 70, cols: COLS, rows: ROWS, cw: CW, ch: CH, size: SIZE, title: 'my-app' })
-const cellXY = (r, c) => [win.originX + c * CW, win.originY + r * CH]
-
-// 指针路线: [时间, x, y]
-const at = (r, c) => cellXY(r, c)
-const P0 = at(13.6, 62)
+const win = termWindow({ x: winX, y: 68, cols: COLS, rows: ROWS, cw: CW, ch: CH, size: SIZE, title: 'my-app' })
+const body = win.el.querySelector('.termbody')
+body.style.position = 'relative'
+const fadeLayer = canvasLayer(body, 12, 9, COLS * CW, ROWS * CH, 20)
+const at = (r, c) => [win.originX + c * CW, win.originY + r * CH]
+const linkCol = i => 4 // "- " 之后
+// 指针路线: [时间, x, y] (箭头尖端)
+const P0 = at(20.6, 70)
 const keys = [
   [0, ...P0],
-  [0.3, ...P0],
-  [1.1, ...at(6.6, 38)],
-  [1.25, ...at(6.6, 38)],
-  [1.75, ...at(5.72, 92.5)],
-  [2.3, ...at(5.72, 92.5)],
-  [2.8, ...at(5.7, 70)],
-  [4.1, ...at(5.7, 70)],
-  [5.0, ...at(10.55, LINK_COL + 9)],
-  [5.55, ...at(10.55, LINK_COL + 9)],
-  [6.3, ...at(14.2, 30)],
-  [8.4, ...at(14.2, 30)],
-  [9.0, ...P0],
+  [0.25, ...P0],
+  [0.95, ...at(R_CARD + 1.55, 30)],
+  [1.15, ...at(R_CARD + 1.55, 30)],
+  [1.45, ...at(R_CARD + 0.6, FILL_COLS[0] + 2.2)],
+  [2.25, ...at(R_CARD + 0.6, FILL_COLS[0] + 2.2)],
+  [2.95, ...at(R_LIST + 1.6, linkCol(1) + 10)],
+  [5.85, ...at(R_LIST + 1.6, linkCol(1) + 10)],
+  [6.55, ...at(R_REPLY2 + 0.6, CHIP.c0 + 5.5)],
+  [7.4, ...at(R_REPLY2 + 0.6, CHIP.c0 + 5.5)],
+  [8.0, ...at(R_TOOL + 0.6, 12)],
+  [8.9, ...at(R_TOOL + 0.6, 12)],
+  [9.6, ...P0],
 ]
+const alphaAt = t => Math.min(seg(t, 0.15, 0.4), 1 - seg(t, 9.3, 9.6))
 
-function hoverState(t) {
+// 指针在哪个悬停范围里 (按 index.d.ts: 有 key 的 Box 是一个范围, 指针在它上面任何位置都算)
+function hover(t) {
   const [px, py] = pathAt(keys, t)
   const c = (px - win.originX) / CW
-  const r = (py - win.originY) / CH
-  const [r0, r1] = cardRows()
-  const onCard = r >= r0 && r < r1 + 1 && c >= CARD.col0 && c < CARD.col1
-  const copied = t >= CLICK_COPY && t < CLICK_COPY + COPIED_MS / 1000
-  const [k0, k1] = copyCols(copied ? '已复制 ✓' : '复制')
-  const onCopy = onCard && Math.floor(r) === CARD.top && c >= k0 && c < k1
-  return { onCard, onCopy, copied }
+  const r = Math.floor((py - win.originY) / CH)
+  const inRows = (a, b) => r >= a && r <= b
+  const on = (cols) => c >= cols[0] && c < cols[1]
+  return {
+    card: inRows(R_CARD, R_CARD + 2) && c >= CARD.c0 && c < CARD.c1,
+    onFill: r === R_CARD && on(FILL_COLS),
+    onCopy: r === R_CARD && on(COPY_COLS),
+    reply1: inRows(R_REPLY1, R_CARD + 2) && c >= 0 && c < COLS,
+    reply2: inRows(R_REPLY2, R_LIST + 2) && c >= 0 && c < COLS,
+    chip2: r === R_REPLY2 && on([CHIP.c0, CHIP.c1]),
+    tool: inRows(R_TOOL, R_TOOL + 1) && c >= 0 && c < COLS,
+  }
 }
 
-function drawTerminal(t) {
-  const { ctx, m } = win.begin()
+function chip(g, row, h, hot, copied) {
+  // 刚复制过: 不等悬停直接显示 "已复制 ✓"; 否则只在指针停在这条回复上时出现
+  if (!copied && !h) return
+  const bg = hot ? TITLE_BG : CODE_BG
+  g.bg(row, CHIP.c0, CHIP.c1, bg)
+  if (copied) g.text(row, CHIP.c0 + 1, '已复制 ✓', { fg: GREEN, bg })
+  else g.text(row, CHIP.c0 + 1, '复制全文', hot ? { fg: ORANGE, bg, bold: true } : { fg: DIMBTN, bg })
+}
+
+function drawTerminal(ctx, m, t) {
   const g = new Grid(COLS, ROWS)
-  transcript(g, 0, [{ kind: 'user', text: '把跑分结果整理成一份报告' }, { kind: 'text', text: '报告写好了。以后重新生成只要两步：' }])
-  // 卡片
-  const h = hoverState(t)
-  const [r0] = cardRows()
-  g.bg(r0, CARD.col0, CARD.col1, h.onCard ? TITLE_BG_HOT : TITLE_BG)
-  g.text(r0, CARD.col0 + 2, CARD.lang, { fg: C.inactive })
-  if (h.copied) {
-    const [k0] = copyCols('已复制 ✓')
-    g.text(r0, k0, '已复制 ✓', { fg: GREEN })
-  } else {
-    const [k0] = copyCols('复制')
-    const st = h.onCopy ? { fg: '#1c1917', bg: ORANGE, bold: true } : h.onCard ? { fg: ORANGE, bold: true } : { fg: COPY_DIM }
-    g.text(r0, k0, '复制', st)
-  }
-  CARD.code.forEach((line, i) => {
-    const r = r0 + 1 + i
-    g.bg(r, CARD.col0, CARD.col1, CODE_BG)
-    g.runs(r, CARD.col0 + 2, line.map(([s, k]) => [s, { fg: SYN[k ?? 'plain'] }]))
+  const h = hover(t)
+  const filled = t >= CLICK_FILL + 0.08
+  const copiedAll = t >= CLICK_ALL && t < CLICK_ALL + COPIED_MS / 1000
+  // 第一条回复: 一句话 + 一张单行 PowerShell 卡片
+  transcript(g, 0, [{ kind: 'user', text: '整理一下这次的渲染结果，写个说明' }, { kind: 'text', text: '要看 docs 里有哪些文件，可以直接跑：' }])
+  g.bg(R_CARD, CARD.c0, CARD.c1, h.card ? TITLE_BG_HOT : TITLE_BG)
+  g.text(R_CARD, CARD.c0 + 2, 'powershell', { fg: C.inactive })
+  const btn = (label, cols, under) => g.text(R_CARD, cols[0], label, under ? INVERT : h.card ? { fg: ORANGE, bold: true } : { fg: DIMBTN })
+  btn('填入', FILL_COLS, h.onFill)
+  btn('复制', COPY_COLS, h.onCopy)
+  g.bg(R_CARD + 1, CARD.c0, CARD.c1, CODE_BG)
+  g.runs(R_CARD + 1, CARD.c0 + 2, [['Get-ChildItem', { fg: SYN.cmd }], [' docs', { fg: SYN.plain }]])
+  g.bg(R_CARD + 2, CARD.c0, CARD.c1, CODE_BG) // 代码下方留一行同色空白
+  chip(g, R_REPLY1, h.reply1, false, false)
+  // 第二条回复: 文件路径变成链接 (文件 / 图片 / 文件夹都能点)
+  g.text(R_REPLY2, 0, '●', { fg: C.text })
+  g.text(R_REPLY2, 2, '渲染结果在这里：', { fg: C.text })
+  LIST.forEach(([path, note], i) => {
+    const r = R_LIST + i
+    g.runs(r, 2, [['- ', { fg: C.text }], [path, { fg: C.link, ul: true }], [' ' + note, { fg: C.text }]])
   })
-  g.bg(r0 + 1 + CARD.code.length, CARD.col0, CARD.col1, CODE_BG) // 代码下方留一行同色空白
-  // 第二段文字: .html 路径变成下划线浅蓝链接 (代码块里的同一路径不变)
-  g.runs(LINK.row, 2, [
-    ['报告在 ', { fg: C.text }],
-    [LINK.text, { fg: C.link, ul: true }],
-    ['，里面有 5 次跑分的延迟对比。', { fg: C.text }],
-  ])
-  inputBox(g, 12, '', Math.floor(t / 0.53) % 2 === 0)
-  hint(g, 15)
+  chip(g, R_REPLY2, h.reply2, h.chip2, copiedAll)
+  if (h.chip2 && !copiedAll) g.text(R_REPLY2, CHIP.c0 + 1, '复制全文', INVERT)
+  // 工具行: Write 写完的文件后面有 "打开" (指针在这一行上时变橙)
+  transcript(g, R_TOOL - 1, [{ kind: 'tool', name: TOOL.name, args: TOOL.args, state: 'ok', result: [TOOL.result], after: [['打开', h.tool ? { fg: ORANGE, bold: true } : { fg: DIMBTN }]] }])
+  // 输入框: 填入 = 以 ! 开头放进输入框, 不提交
+  inputBox(g, R_INPUT, filled ? '!Get-ChildItem docs' : '', Math.floor(t / 0.53) % 2 === 0)
+  hint(g, R_INPUT + 3)
   drawGrid(ctx, g, 0, 0, m)
 }
 
-// ---------------- 浏览器窗口 ----------------
-const BW = 660, BH = 418
-const BX = W - BW - 36, BY = 54
-const br = document.createElement('div')
-br.className = 'browser'
-br.style.cssText = `left:${BX}px;top:${BY}px;width:${BW}px;height:${BH}px;`
-const RUNS = [134, 128, 121, 119, 118]
-br.innerHTML = `
-  <div class="b-tabs"><div class="b-tab"><div class="fav"></div>my-app 性能报告<span class="x">✕</span></div>
-    <div class="b-ctl">
-      <div><svg width="10" height="10"><rect y="4.5" width="10" height="1" fill="#3c4043"/></svg></div>
-      <div><svg width="10" height="10"><rect x=".5" y=".5" width="9" height="9" rx="1.5" fill="none" stroke="#3c4043"/></svg></div>
-      <div><svg width="10" height="10"><path d="M.5 .5 9.5 9.5M9.5 .5 .5 9.5" stroke="#3c4043"/></svg></div>
+// ---------------- 图片查看器 (示意: 系统默认程序打开 png) ----------------
+const VW = 560, VH = 404
+const viewer = document.createElement('div')
+viewer.className = 'viewer'
+viewer.style.cssText += `left:${W - VW - 34}px;top:${160}px;width:${VW}px;height:${VH}px;` // 让开右上角的 toast
+viewer.innerHTML = `
+  <div class="v-bar"><div class="ic"></div>shot-01.png
+    <div class="v-ctl">
+      <div><svg width="10" height="10"><rect y="4.5" width="10" height="1" fill="#cfcfcf"/></svg></div>
+      <div><svg width="10" height="10"><rect x=".5" y=".5" width="9" height="9" rx="1.5" fill="none" stroke="#cfcfcf"/></svg></div>
+      <div><svg width="10" height="10"><path d="M.5 .5 9.5 9.5M9.5 .5 .5 9.5" stroke="#cfcfcf"/></svg></div>
     </div></div>
-  <div class="b-bar"><span class="b-nav">←</span><span class="b-nav">→</span><span class="b-nav">↻</span>
-    <div class="b-url"><span class="lock">ⓘ</span><span><span class="dim">file:///C:/dev/my-app/</span>docs/report.html</span></div></div>
-  <div class="page">
-    <div class="p-head"><div class="p-logo"></div><div class="p-title">my-app 性能报告</div><div class="p-sub">5 次跑分 · bench v2</div></div>
-    <div class="kpis">
-      <div class="kpi"><div class="k">P50 延迟</div><div class="v">42<small>ms</small></div><div class="d">↓ 8% 比上周</div></div>
-      <div class="kpi"><div class="k">P95 延迟</div><div class="v">118<small>ms</small></div><div class="d">↓ 12% 比上周</div></div>
-      <div class="kpi"><div class="k">吞吐</div><div class="v">1.24k<small>req/s</small></div><div class="d">↑ 6% 比上周</div></div>
-    </div>
-    <div class="chart"><div class="ct">每次跑分的 P95 延迟</div>
-      ${RUNS.map((v, i) => `<div class="row"><div class="rl">第 ${i + 1} 次</div><div class="track"><div class="fill" data-v="${v}"></div></div><div class="rv">${v} ms</div></div>`).join('')}
-    </div>
-  </div>`
-document.body.appendChild(br)
-const fills = [...br.querySelectorAll('.fill')]
+  <div class="v-tools"><span>−</span><b>100%</b><span>+</span><span>⟲</span><span>1 / 12</span></div>
+  <div class="v-img"><div class="sun"></div><div class="m1"></div><div class="m2"></div><div class="floor"></div></div>
+  <div class="v-foot"><span>renders/shot-01.png</span><span>1920 × 1080 · 2.4 MB</span></div>`
+document.body.appendChild(viewer)
 
 const pointer = makePointer()
+const toast = makeToast(body, 16, 10)
+const TOASTS = [
+  [CLICK_FILL + 0.1, '已填入输入框，按回车运行'],
+  [CLICK_PNG + 0.1, '已打开: shot-01.png'],
+  [CLICK_ALL + 0.1, '已复制全文 (5 行)'],
+]
 
 // 标题
 const cap = document.createElement('div')
 cap.className = 'caption'
 cap.style.left = winX + 4 + 'px'
 cap.style.top = '22px'
-cap.innerHTML = '<div style="width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#b1b9f9,#7c86e8);align-self:center;display:flex;align-items:center;justify-content:center;color:#15131c;font:700 12px Cascadia Mono">&lt;/&gt;</div><b>html-shelf</b><span>代码块一键复制 · 回复里的 .html 路径单击就用浏览器打开</span>'
+cap.innerHTML = '<div style="width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#b1b9f9,#7c86e8);align-self:center;display:flex;align-items:center;justify-content:center;color:#15131c;font:700 12px Cascadia Mono">&lt;/&gt;</div><b>html-shelf</b><span>代码块一键复制 / 填入输入框 · 回复里的文件路径单击就打开 · 悬停复制全文</span>'
 document.body.appendChild(cap)
 
 window.demo = {
@@ -192,35 +194,38 @@ window.demo = {
   height: H,
   fps: FPS,
   duration: DURATION,
-  check: [1.0, 1.85, 2.6, 4.5, 7.0], // 抽查用的时刻 (秒)
+  check: [1.0, 1.4, 2.4, 4.4, 6.65, 7.3, 8.5], // 抽查用的时刻 (秒)
   ready: Promise.all([document.fonts.load('17px "Cascadia Mono"'), document.fonts.load('bold 17px "Cascadia Mono"'), document.fonts.ready]),
   renderFrame(t) {
-    drawTerminal(t)
+    const { ctx } = win.begin()
+    drawTerminal(ctx, metrics(ctx, CW, CH, SIZE), t)
     const [x, y] = pathAt(keys, t)
-    const down = Math.abs(t - CLICK_COPY) < 0.06 || Math.abs(t - CLICK_LINK) < 0.06
-    pointer.set(x, y, true, down)
-    const rc = seg(t, CLICK_COPY, CLICK_COPY + 0.55)
-    const rl = seg(t, CLICK_LINK, CLICK_LINK + 0.55)
-    if (rc > 0 && rc < 1) pointer.ripple(...pathAt(keys, CLICK_COPY), rc, '215,119,87')
-    else if (rl > 0 && rl < 1) pointer.ripple(x, y, rl, '177,185,249')
-    else pointer.ripple(0, 0, null)
-    // 浏览器: 点链接后滑入, 结尾淡出
-    const kin = seg(t, CLICK_LINK + 0.15, CLICK_LINK + 0.85)
-    const kout = seg(t, 8.45, 9.0)
+    const clicks = [CLICK_FILL, CLICK_PNG, CLICK_ALL]
+    pointer.set(x, y, true, clicks.some(c => Math.abs(t - c) < 0.06), alphaAt(t))
+    const ck = clicks.map(c => seg(t, c, c + 0.55)).find(k => k > 0 && k < 1)
+    pointer.ripple(x, y, ck ?? null, '215,119,87')
+    // toast: 同一时刻只显示一条
+    const live = TOASTS.map(([a, text]) => [toastK(t, a), text]).find(([k]) => k !== null)
+    toast.set(live ? live[1] : '', live ? live[0] : null)
+    // 图片查看器: 点 png 后弹出, 一会儿关掉
+    const kin = seg(t, CLICK_PNG + 0.15, CLICK_PNG + 0.7)
+    const kout = seg(t, 5.55, 5.9)
     const vis = kin > 0 && kout < 1
-    br.style.display = vis ? 'block' : 'none'
+    viewer.style.display = vis ? 'block' : 'none'
     if (vis) {
       const e = easeOutBack(kin)
-      const o = easeOut(kin) * (1 - easeInOut(kout))
-      br.style.opacity = o
-      br.style.transform = `translate(${lerp(90, 0, e) + kout * 40}px, ${lerp(24, 0, e)}px) scale(${lerp(0.94, 1, e)})`
-      const kb = easeOut(seg(t, CLICK_LINK + 0.7, CLICK_LINK + 1.6))
-      fills.forEach((f, i) => (f.style.width = (Number(f.dataset.v) / 140) * 100 * easeOut(clampK(kb * 1.25 - i * 0.06)) + '%'))
+      viewer.style.opacity = easeOut(kin) * (1 - easeInOut(kout))
+      viewer.style.transform = `translate(${lerp(40, 0, e)}px, ${lerp(18, 0, e) + 10 * kout}px) scale(${lerp(0.93, 1, e) - 0.03 * kout})`
+    }
+    // 循环衔接
+    const k = easeOut(seg(t, FADE_AT, DURATION - 1 / FPS))
+    fadeLayer.canvas.style.display = k > 0 ? 'block' : 'none'
+    fadeLayer.canvas.style.opacity = k
+    if (k > 0) {
+      const fctx = fadeLayer.begin('#0c0c0c')
+      drawTerminal(fctx, metrics(fctx, CW, CH, SIZE), 0)
     }
   },
-}
-function clampK(x) {
-  return Math.max(0, Math.min(1, x))
 }
 </script>
 </body>

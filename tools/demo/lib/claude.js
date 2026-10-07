@@ -18,6 +18,7 @@ export function transcript(g, row, items, opts = {}) {
   const cols = g.cols
   for (const it of items) {
     row += 1
+    it.row = row // 这一条从哪一行开始 (给悬停范围用)
     if (it.kind === 'user') {
       g.bg(row, 0, cols, C.userBg)
       g.runs(row, 0, [
@@ -37,14 +38,22 @@ export function transcript(g, row, items, opts = {}) {
       const dot = it.state === 'ok' ? C.success : it.blink ? '#3a3a3a' : C.inactive
       g.text(row, 0, '●', { fg: dot })
       let c = g.text(row, 2, it.name, { fg: C.text, bold: true })
-      g.text(row, c, '(' + it.args + ')', { fg: C.text })
+      c = g.text(row, c, '(' + it.args + ')', { fg: C.text })
+      if (it.after) g.runs(row, c + (it.afterGap ?? 2), it.after) // 工具行后面追加的东西 (html-shelf 的 "打开")
+      it.afterCol = c + (it.afterGap ?? 2)
       row += 1
       for (const r of it.result ?? []) {
         g.text(row, 2, '⎿', { fg: C.inactive })
         g.text(row, 5, r, { fg: C.inactive })
         row += 1
       }
+    } else if (it.kind === 'turn') {
+      // 每轮结束那行 (引擎的 TurnDuration: ✻ Baked for 9s), 后面可以接 usage-hud 的收据 (dimColor)
+      const c = g.text(row, 0, '✻ ' + it.text, { fg: C.inactive })
+      if (it.receipt) g.text(row, c, it.receipt, { fg: '#868686' })
+      row += 1
     }
+    it.endRow = row - 1
   }
   return row
 }

@@ -30,10 +30,10 @@
 <script type="module">
 import { crabSvg, dashSvg } from '../vendor/desktop.js'
 import { makeStage, seg, easeOut, lerp, typed } from '../lib/stage.js'
-import { prettyModel, dur, durShort, big, tok } from '../lib/hud.js'
+import { prettyModel, dur, durShort, big, tok, paceOf, moodOf, toolLabel } from '../lib/hud.js'
 
 const W = 1200, H = 556
-const FPS = 20, DURATION = 10.4
+const FPS = 20, DURATION = 12.0
 
 // ---------------- 卡片尺寸: 照 register.tsx 的 buildDesktop 和 tools/preview-client.mjs ----------------
 const COLS = 120 // 客户端横栏的格数 (bodyColumns)
@@ -45,45 +45,74 @@ const dashW = Math.max(340, Math.min(1040, Math.round(est * 1.05) + 20))
 const contentW = Math.round(COLS * PX_PER_COL)
 
 // ---------------- 剧情 ----------------
+// 闲置悠闲 (墨镜) -> 工作 -> 派出 2 个子代理 (SVG 小螃蟹) -> 用量配速变快, 冒汗 + 红字 "约 40m 后用完" -> 庆祝
 const PROMPT = '给登录页加个「记住我」选项，改完跑一下测试'
 const SEND = 1.5
 const TOOLS = [
-  { tool: 'Read', kind: 'read', args: 'src/auth/login.ts', start: 2.2, end: 3.3 },
-  { tool: 'Bash', kind: 'bash', args: 'npm test -- auth', start: 3.6, end: 4.9 },
-  { tool: 'Write', kind: 'edit', args: 'src/auth/remember.ts', start: 5.2, end: 6.6 },
+  { tool: 'Read', kind: 'read', args: 'src/auth/login.ts', start: 2.0, end: 2.9 },
+  { tool: 'Agent', kind: 'agent', args: '并行检查其他页面和测试用例', start: 3.2, end: 7.0 },
+  { tool: 'Write', kind: 'edit', args: 'src/auth/remember.ts', start: 7.2, end: 8.3 },
 ]
+const AGENTS_FROM = 3.3, AGENTS_TO = 6.9 // 两个子代理在跑的时段
 const FINAL = '已加上「记住我」：勾选后 30 天内免登录，14 个测试全部通过。'
-const FINAL_AT = 6.9
-const COMPLETE = 7.3
+const FINAL_AT = 8.6
+const COMPLETE = 8.9
 const CELEBRATE = 1.4
-const FADE_AT = 10.0
-const STEPS = [2.2, 3.6, 5.2, 6.9]
-const CTX = [82_000, 86_000, 88_000, 96_000, 99_000]
-const FIVE = [23.0, 23.6, 24.3, 25.1, 25.8]
-const WEEK = [41.2, 41.3, 41.4, 41.6, 41.7]
-const COST = [3.12, 3.19, 3.26, 3.35, 3.42]
-const OUT = [0, 380, 210, 1650, 260]
+const FADE_AT = 11.6
+// 用量: 每次模型回复 (主线程和子代理) 结束时更新; 5小时窗口刚开始 12 分钟, 3% -> 23.3%
+const STEPS = [2.0, 3.2, 3.8, 4.4, 5.0, 5.6, 6.2, 6.8, 7.2, 8.6]
+const FIVE = [3.0, 3.6, 4.4, 5.6, 7.5, 10.5, 14.0, 17.5, 20.5, 22.9, 23.3]
+const WEEK = [41.2, 41.3, 41.4, 41.5, 41.6, 41.7, 41.8, 41.9, 42.0, 42.2, 42.3]
+const CTX = [82, 86, 87, 87, 87, 87, 87, 87, 95, 99, 101].map(k => k * 1000)
+const COST = [3.12, 3.17, 3.21, 3.25, 3.29, 3.33, 3.37, 3.41, 3.45, 3.5, 3.54]
+const OUT = [0, 380, 420, 180, 210, 160, 190, 240, 640, 1650, 260]
 const SESSION_MS = (1 * 3600 + 12 * 60 + 5) * 1000
-const TOOLS_LABEL = { '': '思考中', Read: '读文件', Bash: '跑命令', Write: '写文件' }
+const NOW0 = Date.UTC(2026, 9, 6, 6, 0, 0)
+const RESET5 = new Date(NOW0 + (4 * 60 + 48) * 60_000).toISOString()
+const RESETW = new Date(NOW0 + (2 * 86400 + 20 * 3600) * 1000).toISOString()
 
 const stepIdx = t => STEPS.filter(s => t >= s).length
+const agentsAt = t => (t >= AGENTS_FROM && t < AGENTS_TO ? 2 : 0)
+function limitsAt(t) {
+  const k = stepIdx(t)
+  return { now: NOW0 + t * 1000, five: { kind: 'five_hour', percentUsed: FIVE[k], resetsAt: RESET5 }, week: { kind: 'seven_day', percentUsed: WEEK[k], resetsAt: RESETW } }
+}
+const moodAt = t => {
+  const { now, five, week } = limitsAt(t)
+  return moodOf(paceOf(five, now), paceOf(week, now))
+}
+// 和 buildDesktop 一样拼 DashData (limitMeter / status / tools / token)
 function dashData(t) {
   const k = stepIdx(t)
+  const { now, five, week } = limitsAt(t)
   const working = t >= SEND && t < COMPLETE
   const running = TOOLS.find(x => t >= x.start && t < x.end)
-  const counts = { Read: 6, Bash: 4, Write: 3, Grep: 2 }
-  for (const x of TOOLS) if (t >= x.start) counts[x.tool]++
+  const counts = { Read: 9, Bash: 6, Write: 3, Grep: 2 }
+  for (const x of TOOLS) if (t >= x.start) counts[x.tool] = (counts[x.tool] ?? 0) + 1
+  // 两个子代理各自调的工具也计入统计 (tool.call 不分线程)
+  const kidCalls = Math.max(0, Math.min(6, Math.floor((Math.min(t, AGENTS_TO) - AGENTS_FROM) / 0.55)))
+  if (t >= AGENTS_FROM) {
+    counts.Read += Math.ceil(kidCalls / 2)
+    counts.Grep += Math.floor(kidCalls / 2)
+  }
   let total = 18_420_000, output = 91_200
   for (let i = 1; i <= k; i++) {
-    total += CTX[i] + OUT[i]
+    total += CTX[i] + OUT[i] + 20_000
     output += OUT[i]
   }
+  const limitMeter = (l, p) =>
+    p?.willRunOut && p.runOutIn !== undefined
+      ? { pct: l?.percentUsed, extra: '约 ' + durShort(p.runOutIn) + ' 后用完', warn: true }
+      : { pct: l?.percentUsed, extra: l?.resetsAt ? durShort(Date.parse(l.resetsAt) - now) + ' 后重置' : '' }
+  const n = agentsAt(t)
+  const ag = n ? `  +${n} 个子代理` : ''
   const done = t >= COMPLETE
-  // 和 buildDesktop 一样拼 DashData
   const status = working
-    ? { text: TOOLS_LABEL[running ? running.tool : ''], tone: 'work' }
-    : { text: '✓ 上一轮 ' + dur(done ? (COMPLETE - SEND) * 1000 : 64_000) + '，' + (done ? 3 : 6) + ' 次工具', tone: 'idle' }
-  const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([n, c]) => n + ' ' + c).join('  ')
+    ? { text: toolLabel(running ? running.tool : '') + ag, tone: 'work' }
+    : n
+      ? { text: n + ' 个子代理在跑', tone: 'agents' }
+      : { text: '✓ 上一轮 ' + dur(done ? (COMPLETE - SEND) * 1000 : 64_000) + '，' + (done ? TOOLS.length : 6) + ' 次工具', tone: 'idle' }
+  const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([nm, c]) => nm + ' ' + c).join('  ')
   return {
     model: prettyModel('claude-opus-5-5'),
     effort: 'high',
@@ -92,8 +121,8 @@ function dashData(t) {
     session: dur(SESSION_MS + t * 1000),
     cost: '$' + COST[k].toFixed(2),
     ctx: { pct: Math.round((CTX[k] / 200_000) * 100), extra: tok(CTX[k]) + ' / ' + tok(200_000) },
-    five: { pct: FIVE[k], extra: durShort((2 * 3600 + 41 * 60 + 10) * 1000) + ' 后重置' },
-    week: { pct: WEEK[k], extra: durShort((3 * 86400 + 6 * 3600 + 20 * 60) * 1000) + ' 后重置' },
+    five: limitMeter(five, paceOf(five, now)),
+    week: limitMeter(week, paceOf(week, now)),
     status,
     tools: top,
     tokenTotal: big(total),
@@ -101,16 +130,21 @@ function dashData(t) {
   }
 }
 // 螃蟹图只在状态变化时换 (客户端里换图 = SMIL 动画从头播); 返回 [状态, 这张图出现的时刻]
+// 状态 = buildDesktop 传给 crabSvg 的那几样: mode / kind / heat / agents / mood
+function crabStateAt(t) {
+  const working = t >= SEND && t < COMPLETE
+  const running = TOOLS.find(x => t >= x.start && t < x.end)
+  const mode = t >= COMPLETE && t < COMPLETE + CELEBRATE ? 'celebrate' : working ? 'work' : 'idle'
+  return { mode, kind: running ? running.kind : 'think', heat: 'ok', agents: agentsAt(t), mood: moodAt(t) }
+}
 function crabAt(t) {
-  if (t < SEND) return [{ mode: 'idle', kind: 'think', heat: 'ok', agents: 0 }, -8.5] // 闲置图在开头之前就挂着了
-  if (t < COMPLETE) {
-    const r = TOOLS.find(x => t >= x.start && t < x.end)
-    if (r) return [{ mode: 'work', kind: r.kind, heat: 'ok', agents: 0 }, r.start]
-    const prevEnd = Math.max(SEND, ...TOOLS.filter(x => t >= x.end).map(x => x.end))
-    return [{ mode: 'work', kind: 'think', heat: 'ok', agents: 0 }, prevEnd]
-  }
-  if (t < COMPLETE + CELEBRATE) return [{ mode: 'celebrate', kind: 'think', heat: 'ok', agents: 0 }, COMPLETE]
-  return [{ mode: 'idle', kind: 'think', heat: 'ok', agents: 0 }, COMPLETE + CELEBRATE]
+  const st = crabStateAt(t)
+  const key = JSON.stringify(st)
+  // 往回找这个状态从什么时候开始 (每 1/FPS 一步)
+  let since = t
+  while (since - 1 / FPS >= -0.001 && JSON.stringify(crabStateAt(since - 1 / FPS)) === key) since -= 1 / FPS
+  if (since < 0.001) since = -8.5 // 开头那张闲置图早就挂着了
+  return [st, since]
 }
 
 // ---------------- 舞台 ----------------
@@ -193,7 +227,7 @@ window.demo = {
   height: H,
   fps: FPS,
   duration: DURATION,
-  check: [1.0, 2.8, 4.2, 5.8, 8.0], // 抽查用的时刻 (秒)
+  check: [1.0, 2.4, 4.0, 6.0, 7.6, 9.4, 11.0], // 抽查用的时刻 (秒)
   ready: document.fonts.ready,
   renderFrame(t) {
     draw(main, t)

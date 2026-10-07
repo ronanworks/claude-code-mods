@@ -21,12 +21,12 @@
 import { Grid, drawGrid, metrics, dw } from '../lib/cells.js'
 import { makeStage, termWindow, seg, easeOut, easeOutBack, typed, lerp } from '../lib/stage.js'
 import { transcript, inputBox, hint, spinner, C } from '../lib/claude.js'
-import { drawHud, easeAt } from '../lib/hud.js'
+import { drawHud, easeAt, dur, receiptText } from '../lib/hud.js'
 import { FRAME_MS } from '../lib/crab.js'
 
-const COLS = 128, ROWS = 26, CW = 8, CH = 16, SIZE = 13.65
-const W = 1200, H = 594
-const FPS = 20, DURATION = 15.8
+const COLS = 128, ROWS = 28, CW = 8, CH = 16, SIZE = 13.65
+const W = 1200, H = 626
+const FPS = 20, DURATION = 18.0
 
 // ---------------- PowerShell 部分 ----------------
 const PS = 'PS C:\\dev\\my-app> '
@@ -56,42 +56,58 @@ const P_AT = LAUNCH + 0.75, P_DT = 0.075
 const P_ENTER = P_AT + ([...PROMPT].length - 1) * P_DT + 0.3
 const STEP1 = P_ENTER + 0.7 // 第一次模型回复结束: 发起 Read, 用量数据第一次到达
 const READ_END = STEP1 + 0.9
-const FADE_AT = 15.4
+const FINAL = '这是 my-app 的前端：登录、设置和报告三个页面，测试在 tests/ 里。'
+const FINAL_AT = READ_END + 0.3, FINAL_END = FINAL_AT + 0.4
+const STEP2 = FINAL_AT // 第二次回复 (最后一段文字) 结束时用量再更新一次
+const COMPLETE = FINAL_END + 0.2
+const CELEBRATE_MS = 1400 // 一轮不到 3 分钟 -> 庆祝 1.4 秒 (源码)
+const FADE_AT = 17.6
 const CTX_WIN = 200_000
+const RESET5 = (2 * 3600 + 41 * 60 + 10) * 1000 // 第一次回复带回来的额度: 5小时 2h41m 后重置, 本周 3d6h 后重置
+const RESETW = (3 * 86400 + 6 * 3600 + 20 * 60) * 1000
+const iso = ms => new Date(ms).toISOString()
+// 这一轮的收据: 新会话 turn.start 时花费 $0, 结束时 $0.09; 没改文件; 工具 1 次
+const RECEIPT = receiptText({ usd: 0.09, files: 0, add: 0, del: 0, tools: 1 })
 
 function hudState(t) {
   const fi = Math.max(0, Math.floor(((t - LAUNCH) * 1000) / FRAME_MS))
   const known = f => LAUNCH + (f * FRAME_MS) / 1000 >= STEP1
   const got = t >= STEP1
+  const second = t >= STEP2
+  const done = t >= COMPLETE
+  // 时间轴: 页面时间 t 秒 = 2026-10-06 06:00 之后 t 秒
+  const now = Date.UTC(2026, 9, 6, 6, 0, 0) + t * 1000
+  const L0 = Date.UTC(2026, 9, 6, 6, 0, 0) + STEP1 * 1000
   return {
     frame: fi, // 新会话: 帧计数从 0 开始
-    working: t >= P_ENTER,
+    working: t >= P_ENTER && !done,
     currentTool: t >= STEP1 && t < READ_END ? 'Read' : '',
-    now: t * 1000,
-    startedAt: LAUNCH * 1000,
-    turnStartedAt: P_ENTER * 1000,
-    lastTurnMs: 0,
-    lastTurnTools: 0,
+    now,
+    startedAt: now - (t - LAUNCH) * 1000,
+    turnStartedAt: now - (t - P_ENTER) * 1000,
+    lastTurnMs: done ? Math.round((COMPLETE - P_ENTER) * 1000) : 0,
+    lastTurnTools: done ? 1 : 0,
     modelId: 'claude-opus-5-5',
     effort: 'high',
     project: 'my-app',
     branch: 'main',
     dirty: 0,
-    costUsd: got ? 0.06 : 0,
+    costUsd: second ? 0.09 : got ? 0.06 : 0,
     // 第一次回复之前还没有用量数据: 显示 --; 数据到了以后, 显示值从 0 起按源码的 ease() 追上去
-    ctx: { pct: got ? 11 : undefined, tokens: got ? 21_400 : undefined, window: CTX_WIN },
-    five: got ? { percentUsed: 23.4, resetsInMs: (2 * 3600 + 41 * 60 + 10) * 1000 } : undefined,
-    week: got ? { percentUsed: 41.2, resetsInMs: (3 * 86400 + 6 * 3600 + 20 * 60) * 1000 } : undefined,
+    // 有了额度读数后两个窗口的配速都不到 0.8 -> 情绪 "悠闲": 一轮结束回到闲置时螃蟹戴上墨镜
+    ctx: { pct: got ? 11 : undefined, tokens: got ? (second ? 22_800 : 21_400) : undefined, window: CTX_WIN },
+    five: got ? { kind: 'five_hour', percentUsed: second ? 23.6 : 23.4, resetsAt: iso(L0 + RESET5) } : undefined,
+    week: got ? { kind: 'seven_day', percentUsed: 41.2, resetsAt: iso(L0 + RESETW) } : undefined,
     shown: {
       ctx: easeAt(f => (known(f) ? 11 : undefined), fi, 0),
-      h5: easeAt(f => (known(f) ? 23.4 : undefined), fi, 0),
+      h5: easeAt(f => (known(f) ? (LAUNCH + (f * FRAME_MS) / 1000 >= STEP2 ? 23.6 : 23.4) : undefined), fi, 0),
       wk: easeAt(f => (known(f) ? 41.2 : undefined), fi, 0),
     },
     // 刚启动: 会话记录文件还没写出来 -> 统计脚本找不到 -> 只显示本次启动以来的累计
-    tok: t < LAUNCH + 0.45 ? { state: 'counting' } : { state: 'failed', total: got ? 21_520 : 0, output: got ? 120 : 0 },
+    tok: t < LAUNCH + 0.45 ? { state: 'counting' } : { state: 'failed', total: second ? 44_480 : got ? 21_520 : 0, output: second ? 260 : got ? 120 : 0 },
     toolCounts: t >= STEP1 ? { Read: 1 } : {},
     agents: 0,
-    celebrating: false,
+    celebrating: done && (t - COMPLETE) * 1000 < CELEBRATE_MS,
     sleeping: false,
   }
 }
@@ -139,9 +155,14 @@ function drawTerminal(api, t) {
     if (t >= P_ENTER) {
       const items = [{ kind: 'user', text: PROMPT }]
       if (t >= STEP1) items.push({ kind: 'tool', name: 'Read', args: 'README.md', state: t >= READ_END ? 'ok' : 'run', blink: t < READ_END && Math.floor((t - STEP1) / 0.4) % 2 === 1, result: t >= READ_END ? ['Read 48 lines'] : [] })
-      row = transcript(g, row, items) + 1
-      spinner(g, row, t, Math.round(t - P_ENTER))
-      row += 1
+      if (t >= FINAL_AT) items.push({ kind: 'text', text: typed(FINAL, t, FINAL_AT, (FINAL_END - FINAL_AT) / [...FINAL].length) })
+      // 一轮结束: 引擎的 "✻ Baked for 2s" 那行, usage-hud 在后面接上收据
+      if (t >= COMPLETE) items.push({ kind: 'turn', text: 'Baked for ' + dur((COMPLETE - P_ENTER) * 1000), receipt: RECEIPT })
+      row = transcript(g, row, items)
+      if (t < COMPLETE) {
+        spinner(g, row + 1, t, Math.round(t - P_ENTER), 'Baking')
+        row += 2
+      }
     }
     row += 1
     const text = t < P_ENTER ? typed(PROMPT, t, P_AT, P_DT) : ''
@@ -197,7 +218,7 @@ window.demo = {
   height: H,
   fps: FPS,
   duration: DURATION,
-  check: [3.5, 8.9, 11.5, 14.6], // 抽查用的时刻 (秒)
+  check: [3.5, 8.9, 12.0, 13.8, 15.6, 17.0], // 抽查用的时刻 (秒)
   ready: Promise.all([document.fonts.load('13px "Cascadia Mono"'), document.fonts.load('bold 13px "Cascadia Mono"'), document.fonts.ready]),
   renderFrame(t) {
     win.setTitle(t >= LAUNCH && t < FADE_AT ? 'Claude Code' : 'Windows PowerShell')

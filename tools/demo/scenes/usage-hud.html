@@ -3,84 +3,103 @@
 <head>
 <meta charset="utf-8">
 <title>usage-hud demo</title>
+<style>
+  .pane { position: absolute; z-index: 8; display: none; box-sizing: border-box; border-radius: 9px; border: 1px solid #6b6b70; background: #121214; overflow: hidden;
+    box-shadow: 0 18px 44px rgba(0,0,0,0.65); }
+</style>
 </head>
 <body>
 <script type="module">
 import { Grid, drawGrid, metrics } from '../lib/cells.js'
-import { makeStage, termWindow, seg, easeOut, typed } from '../lib/stage.js'
-import { transcript, inputBox, hint, spinner } from '../lib/claude.js'
-import { drawHud, easeAt } from '../lib/hud.js'
+import { makeStage, termWindow, makePointer, canvasLayer, pathAt, seg, easeOut, easeInOut, typed, lerp } from '../lib/stage.js'
+import { transcript, inputBox, hint, spinner, C } from '../lib/claude.js'
+import { drawHud, drawAgentsPane, easeAt, dur, paceOf, moodOf, receiptText } from '../lib/hud.js'
 import { FRAME_MS, scenePx, setFrame, toolKind } from '../lib/crab.js'
 
 // ---------------- 尺寸 ----------------
-const COLS = 128, ROWS = 26, CW = 8, CH = 16, SIZE = 13.65
-const W = 1200, H = 578
-const FPS = 20, DURATION = 11.4
+const COLS = 128, ROWS = 28, CW = 8, CH = 16, SIZE = 13.65
+const W = 1200, H = 594
+const FPS = 20, DURATION = 14.0
 
 // ---------------- 剧情 (秒) ----------------
 const PROMPT = '给登录页加个「记住我」选项，改完跑一下测试'
-const TYPE_AT = 0.35, TYPE_DT = 0.06
-const ENTER = 1.8
+const TYPE_AT = 0.4, TYPE_DT = 0.055
+const ENTER = 1.9
+// 主线程的工具调用
 const TOOLS = [
-  { tool: 'Read', name: 'Read', args: 'src/auth/login.ts', start: 2.4, end: 3.2, result: 'Read 86 lines' },
-  { tool: 'WebFetch', name: 'Fetch', args: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Cookies', start: 3.5, end: 4.6, result: 'Received 182.4KB (200 OK)' },
-  { tool: 'Write', name: 'Write', args: 'src/auth/remember.ts', start: 4.9, end: 6.3, result: 'Wrote 32 lines to src/auth/remember.ts' },
-  { tool: 'Bash', name: 'Bash', args: 'npm test -- auth', start: 6.6, end: 7.9, result: 'Tests: 14 passed, 14 total' },
+  { tool: 'Read', args: 'src/auth/login.ts', start: 2.4, end: 3.1, result: 'Read 86 lines' },
+  { tool: 'Write', args: 'src/auth/remember.ts', start: 3.4, end: 4.5, result: 'Wrote 32 lines to src/auth/remember.ts' },
+  { tool: 'Bash', args: 'npm test -- auth', start: 4.8, end: 5.9, result: 'Tests: 14 passed, 14 total' },
+  { tool: 'Agent', args: '检查其他页面的登录逻辑', start: 6.2, end: 9.6, result: 'Done (5 tool uses · 41.2k tokens · 3s)' },
 ]
-const FINAL = '已加上「记住我」：勾选后 30 天内免登录，14 个测试全部通过。'
-const FINAL_AT = 8.2, FINAL_END = 8.7
-const COMPLETE = 8.8
+// 子代理在后台调的工具 (带 agentId: 不改主线程的 currentTool, 但计入工具统计和收据)
+const KID_TOOLS = [
+  { tool: 'Grep', at: 6.6 },
+  { tool: 'Read', at: 7.1 },
+  { tool: 'Read', at: 7.7 },
+  { tool: 'Glob', at: 8.3 },
+  { tool: 'Read', at: 8.9 },
+]
+const KID_START = 6.25, KID_END = 9.55
+const FINAL = '已加上「记住我」：勾选后 30 天内免登录，其他页面也检查过了，14 个测试全部通过。'
+const FINAL_AT = 9.9, FINAL_END = 10.4
+const COMPLETE = 10.9 // 一轮 9.0 秒
 const CELEBRATE_MS = 1400 // turn.complete: 一轮不到 3 分钟 -> 庆祝 1.4 秒 (源码)
-const FADE_AT = 11.0
-const FRAME0 = 118 // 螃蟹帧计数的起点: 让开头的闲置状态正好赶上源码里的"挥手" (cyc 120-136)
+const FADE_AT = 13.6
+const FRAME0 = 118 // 螃蟹帧计数的起点: 让开头的闲置正好赶上源码里的"挥手" (cyc 120-136)
+// 鼠标点 "+1代理" 打开子代理看板
+const CLICK_AGENTS = 7.4, PANE_IN = 7.5, PANE_OUT = 9.0
 
-// 每次模型回复 (= 每个工具调用前 + 最后一段文字) 结束时, 用量数据更新一次
-const STEPS = [2.4, 3.5, 4.9, 6.6, 8.7]
-const CTX_TOK = [82_000, 86_000, 91_000, 99_500, 103_000, 104_500]
+// 每次模型回复结束 (主线程每个工具调用前、子代理每次请求、最后一段文字) 用量数据更新一次
+const STEPS = [2.4, 3.4, 4.8, 6.2, 6.6, 7.1, 7.7, 8.3, 8.9, 9.5, 9.9]
+// 5小时窗口刚开始 12 分钟 (4h48m 后重置): 用量从 3% 涨到 23%, 配速从 0.75 涨到 5.75
+//   -> 情绪 悠闲 -> 正常 -> 冒汗; 红字从 "3h22m后用完" 一路缩到 "约40m后用完" (全部由移植的 paceOf / limitExtra 算出)
+const FIVE = [3.0, 3.6, 4.4, 5.6, 7.5, 10.5, 14.0, 17.5, 20.5, 22.4, 22.9, 23.3]
+const WEEK = [41.2, 41.3, 41.4, 41.5, 41.6, 41.7, 41.8, 41.9, 42.0, 42.1, 42.2, 42.3]
+// 上下文只跟主线程走: 子代理的请求不加主线程上下文; 子代理结果回来后过 75% -> 出现 [压缩]
+const CTX_TOK = [136, 139, 142, 145, 146, 146, 146, 146, 146, 146, 151, 152].map(k => k * 1000)
 const CTX_WIN = 200_000
-const FIVE = [23.0, 23.6, 24.4, 25.3, 26.1, 26.8]
-const WEEK = [41.2, 41.3, 41.4, 41.6, 41.8, 42.0]
-const COST = [3.12, 3.19, 3.27, 3.36, 3.44, 3.51]
-const OUT_DELTA = [0, 380, 520, 1650, 210, 260]
+const COST = [3.12, 3.17, 3.22, 3.27, 3.31, 3.34, 3.37, 3.4, 3.43, 3.46, 3.5, 3.54]
+const STEP_TOK = [0, 139, 142, 145, 146, 24, 27, 31, 35, 38, 151].map(k => k * 1000)
+const STEP_OUT = [0, 380, 1650, 260, 420, 180, 210, 160, 190, 640, 300]
 const NOW0 = Date.UTC(2026, 9, 6, 6, 0, 0)
 const SESSION_MS = (1 * 3600 + 12 * 60 + 5) * 1000
+const iso = ms => new Date(NOW0 + ms).toISOString()
+const RESET5 = iso((4 * 60 + 48) * 60_000)
+const RESETW = iso((2 * 86400 + 20 * 3600) * 1000)
 
 const stepIdx = t => STEPS.filter(s => t >= s).length
 function tokensAt(t) {
   const k = stepIdx(t)
   let total = 18_420_000, output = 91_200
-  for (let i = 1; i <= k; i++) {
-    total += CTX_TOK[i] + OUT_DELTA[i]
-    output += OUT_DELTA[i]
+  for (let i = 0; i < k; i++) {
+    total += STEP_TOK[i + 0] + STEP_OUT[i]
+    output += STEP_OUT[i]
   }
   return { total, output }
 }
+const agentRunning = t => t >= KID_START && t < KID_END
 
-// 某一时刻 usage-hud 看到的会话状态 (对应源码里的模块变量和 $.session.usage())
+// 某一时刻 usage-hud 看到的会话状态 (对应源码里的模块变量、$.session.usage() 和 $.agent.list())
 function hudState(t) {
   const fi = Math.floor((t * 1000) / FRAME_MS)
-  const frame = FRAME0 + fi
   const working = t >= ENTER && t < COMPLETE
   const running = TOOLS.find(x => t >= x.start && t < x.end)
-  const counts = { Read: 6, Bash: 4, Write: 3, Grep: 2 }
-  let turnTools = 0
-  for (const x of TOOLS) if (t >= x.start) {
-    counts[x.tool] = (counts[x.tool] ?? 0) + 1
-    turnTools++
-  }
+  const counts = { Read: 9, Bash: 6, Write: 3, Grep: 2 }
+  for (const x of [...TOOLS.map(x => ({ tool: x.tool, at: x.start })), ...KID_TOOLS]) if (t >= x.at) counts[x.tool] = (counts[x.tool] ?? 0) + 1
   const k = stepIdx(t)
   const target = arr => f => arr[stepIdx((f * FRAME_MS) / 1000)]
   const ctxPct = tk => Math.round((tk / CTX_WIN) * 100)
   const done = t >= COMPLETE
   return {
-    frame,
+    frame: FRAME0 + fi,
     working,
     currentTool: running ? running.tool : '',
     now: NOW0 + t * 1000,
     startedAt: NOW0 - SESSION_MS,
     turnStartedAt: NOW0 + ENTER * 1000,
     lastTurnMs: done ? Math.round((COMPLETE - ENTER) * 1000) : 64_000,
-    lastTurnTools: done ? 4 : 6,
+    lastTurnTools: done ? TOOLS.length : 6,
     modelId: 'claude-opus-5-5',
     effort: 'high',
     project: 'my-app',
@@ -88,8 +107,8 @@ function hudState(t) {
     dirty: 0,
     costUsd: COST[k],
     ctx: { pct: ctxPct(CTX_TOK[k]), tokens: CTX_TOK[k], window: CTX_WIN },
-    five: { percentUsed: FIVE[k], resetsInMs: (2 * 3600 + 41 * 60 + 10) * 1000 },
-    week: { percentUsed: WEEK[k], resetsInMs: (3 * 86400 + 6 * 3600 + 20 * 60) * 1000 },
+    five: { kind: 'five_hour', percentUsed: FIVE[k], resetsAt: RESET5 },
+    week: { kind: 'seven_day', percentUsed: WEEK[k], resetsAt: RESETW },
     // 会话已经跑了一阵, 显示值早已追上目标: 从当前目标起步, 之后每帧按源码的 ease() 追
     shown: {
       ctx: easeAt(f => ctxPct(CTX_TOK[stepIdx((f * FRAME_MS) / 1000)]), fi, ctxPct(CTX_TOK[0])),
@@ -98,34 +117,55 @@ function hudState(t) {
     },
     tok: { state: 'ready', ...tokensAt(t) },
     toolCounts: counts,
-    agents: 0,
+    agents: agentRunning(t) ? 1 : 0,
     celebrating: t >= COMPLETE && (t - COMPLETE) * 1000 < CELEBRATE_MS,
     sleeping: false,
   }
 }
 
+// 这一轮的收据 (源码 turn.complete 里算的那几样): 花费差、改了的文件、所有线程的工具次数
+const RECEIPT = receiptText({ usd: COST[COST.length - 1] - COST[0], files: 1, add: 32, del: 0, tools: TOOLS.length + KID_TOOLS.length })
+
+// 子代理看板里的子代理 (运行中的就是这一轮派出的那个; 另外两个是本会话更早结束的)
+function kidsAt(t) {
+  const now = NOW0 + t * 1000
+  const seen = KID_TOOLS.filter(x => t >= x.at)
+  const last = seen[seen.length - 1]
+  return [
+    { desc: '检查其他页面的登录逻辑', type: 'Explore', startedAt: NOW0 + KID_START * 1000, lastAt: NOW0 + (last ? last.at : KID_START) * 1000, lastTool: last ? last.tool : '', tools: seen.length, status: 'running' },
+    { desc: '整理接口文档', type: 'general-purpose', startedAt: now - 31 * 60_000, endedAt: now - 26 * 60_000 - 58_000, lastAt: 0, lastTool: 'Write', tools: 11, status: 'completed' },
+    { desc: '跑端到端测试', type: 'general-purpose', startedAt: now - 9 * 60_000, endedAt: now - 8 * 60_000 - 12_000, lastAt: 0, lastTool: 'Bash', tools: 3, status: 'failed' },
+  ]
+}
+
 // ---------------- 一帧终端画面 ----------------
-function drawTerminal(win, canvasApi, t) {
-  const { ctx, m } = canvasApi(win)
+let lastButtons = {}
+function drawTerminal(ctx, m, t) {
   const g = new Grid(COLS, ROWS)
   const items = []
   if (t >= ENTER) items.push({ kind: 'user', text: PROMPT })
   for (const x of TOOLS) {
     if (t < x.start) continue
     const ok = t >= x.end
-    items.push({ kind: 'tool', name: x.name, args: x.args, state: ok ? 'ok' : 'run', blink: !ok && Math.floor((t - x.start) / 0.4) % 2 === 1, result: ok ? [x.result] : [] })
+    items.push({ kind: 'tool', name: x.tool, args: x.args, state: ok ? 'ok' : 'run', blink: !ok && Math.floor((t - x.start) / 0.4) % 2 === 1, result: ok ? [x.result] : [] })
   }
   if (t >= FINAL_AT) items.push({ kind: 'text', text: typed(FINAL, t, FINAL_AT, (FINAL_END - FINAL_AT) / [...FINAL].length) })
+  // 一轮结束: 引擎的 "✻ Baked for 9s" 那行, usage-hud 在后面接上收据
+  if (t >= COMPLETE) items.push({ kind: 'turn', text: 'Baked for ' + dur((COMPLETE - ENTER) * 1000), receipt: RECEIPT })
   transcript(g, 0, items)
 
   const working = t >= ENTER && t < COMPLETE
-  if (working) spinner(g, 17, t, Math.round(t - ENTER))
+  if (working) spinner(g, 19, t, Math.round(t - ENTER), 'Baking')
   const text = t < ENTER ? typed(PROMPT, t, TYPE_AT, TYPE_DT) : ''
   const typing = t >= TYPE_AT && t < ENTER
-  inputBox(g, 19, text, typing || Math.floor(t / 0.53) % 2 === 0)
+  inputBox(g, 21, text, typing || Math.floor(t / 0.53) % 2 === 0)
   // 面板画在 PromptHint 里: 可用宽度 = viewport.columns - 2 (源码), 从第 1 列开始
-  drawHud(g, 22, 1, COLS - 2, hudState(t))
-  hint(g, 25)
+  const hud = drawHud(g, 24, 1, COLS - 2, hudState(t))
+  lastButtons = hud.buttons
+  // 指针正压在 "+1代理" 上: 按钮反色 (引擎对 Button 的固定画法)
+  const b = hud.buttons.agents
+  if (b && pointerOn(t)) g.text(b[0], b[1], '+1代理', { fg: '#0c0c0c', bg: '#ffffff' })
+  hint(g, 27)
   drawGrid(ctx, g, 0, 0, m)
 }
 
@@ -133,26 +173,42 @@ function drawTerminal(win, canvasApi, t) {
 makeStage(W, H)
 const winX = Math.round((W - (COLS * CW + 24)) / 2)
 const win = termWindow({ x: winX, y: 64, cols: COLS, rows: ROWS, cw: CW, ch: CH, size: SIZE, title: 'my-app' })
-// 循环衔接: 结尾把画面淡回开头那一帧
 const body = win.el.querySelector('.termbody')
 body.style.position = 'relative'
-const fadeCv = document.createElement('canvas')
-fadeCv.style.cssText = `position:absolute;left:12px;top:9px;width:${COLS * CW}px;height:${ROWS * CH}px;`
-body.appendChild(fadeCv)
-const fadeWin = { ...win, canvas: fadeCv }
-function canvasOf(w) {
-  const dpr = window.devicePixelRatio || 1
-  const cv = w.canvas
-  if (cv.width !== COLS * CW * dpr) {
-    cv.width = COLS * CW * dpr
-    cv.height = ROWS * CH * dpr
-  }
-  const ctx = cv.getContext('2d')
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-  ctx.fillStyle = '#0c0c0c'
-  ctx.fillRect(0, 0, COLS * CW, ROWS * CH)
-  return { ctx, m: metrics(ctx, CW, CH, SIZE) }
+const fadeLayer = canvasLayer(body, 12, 9, COLS * CW, ROWS * CH, 20)
+
+// 子代理看板 (侧边面板): 内容按 buildAgentsPane 画, 外框是示意 (引擎的面板外框没有公开)
+const PANE_COL = 50, PANE_W = COLS - PANE_COL // 78 列: 边框 + 内边距 + 74 列内容 (>= 72 = 宽面板, 一行一个)
+const PANE_ROWS = 9 // 标题 + 表头 + 1 行运行中 + 已结束标题 + 2 行已结束 + 提示, 上下各留 1 行
+const paneEl = document.createElement('div')
+paneEl.className = 'pane'
+paneEl.style.left = 12 + PANE_COL * CW + 'px'
+paneEl.style.top = 9 + 1 * CH + 'px'
+paneEl.style.width = PANE_W * CW + 'px'
+paneEl.style.height = PANE_ROWS * CH + 'px'
+body.appendChild(paneEl)
+const paneLayer = canvasLayer(paneEl, -1, -1, PANE_W * CW, PANE_ROWS * CH, 1)
+function drawPane(t) {
+  const ctx = paneLayer.begin()
+  const m = metrics(ctx, CW, CH, SIZE)
+  const g = new Grid(PANE_W, PANE_ROWS)
+  // 内容 74 列 (>= 72 = 宽面板), 左右各留 2 列
+  drawAgentsPane(g, 1, 2, PANE_W - 4, kidsAt(t), NOW0 + t * 1000)
+  drawGrid(ctx, g, 0, 0, m)
 }
+
+// 鼠标: 从右下进场, 点 "+1代理", 看板开着时停在原处, 关掉后离开
+const pointer = makePointer()
+function agentsXY() {
+  const b = lastButtons.agents ?? [25, 40, 46]
+  return [win.originX + ((b[1] + b[2]) / 2) * CW + 3, win.originY + (b[0] + 0.62) * CH]
+}
+const P_FROM = [win.originX + 92 * CW, win.originY + 31 * CH]
+function pointerAt(t) {
+  const [ax, ay] = agentsXY()
+  return pathAt([[6.5, ...P_FROM], [7.25, ax, ay], [9.1, ax, ay], [9.8, ...P_FROM]], t)
+}
+const pointerOn = t => t >= 7.22 && t < 9.12
 
 // 标题: 左边是放大 4 倍的同一只螃蟹 (和面板里的螃蟹同一帧、同一套像素), 方便看清动作
 const CRAB_PX = 4
@@ -160,7 +216,7 @@ const cap = document.createElement('div')
 cap.className = 'caption'
 cap.style.left = winX + 4 + 'px'
 cap.style.top = '17px'
-cap.innerHTML = `<canvas id="capcrab" style="width:${15 * CRAB_PX}px;height:${6 * CRAB_PX}px;align-self:center"></canvas><b>usage-hud</b><span>Claude Code 输入框下方的用量面板 · 像素小螃蟹跟着工具做动作</span>`
+cap.innerHTML = `<canvas id="capcrab" style="width:${15 * CRAB_PX}px;height:${6 * CRAB_PX}px;align-self:center"></canvas><b>usage-hud</b><span>Claude Code 输入框下方的用量面板 · 螃蟹跟着工具做动作，按用量配速换心情</span>`
 document.body.appendChild(cap)
 function drawCapCrab(t) {
   const cv = document.getElementById('capcrab')
@@ -175,7 +231,8 @@ function drawCapCrab(t) {
   ctx.clearRect(0, 0, w, h)
   const s = hudState(t)
   setFrame(s.frame)
-  const px = scenePx({ working: s.working, kind: toolKind(s.currentTool), pct: s.ctx.pct, celebrating: s.celebrating, sleeping: s.sleeping, agents: s.agents })
+  const mood = moodOf(paceOf(s.five, s.now), paceOf(s.week, s.now))
+  const px = scenePx({ working: s.working, kind: toolKind(s.currentTool), pct: s.ctx.pct, celebrating: s.celebrating, sleeping: s.sleeping, agents: s.agents, mood })
   px.forEach((row, y) => row.forEach((c, x) => {
     if (c < 0) return
     ctx.fillStyle = '#' + c.toString(16).padStart(6, '0')
@@ -183,21 +240,47 @@ function drawCapCrab(t) {
   }))
 }
 
+function mainCanvas() {
+  const ctx = (win.begin().ctx)
+  return { ctx, m: metrics(ctx, CW, CH, SIZE) }
+}
+
 window.demo = {
   width: W,
   height: H,
   fps: FPS,
   duration: DURATION,
-  check: [1.0, 2.8, 4.0, 5.6, 7.2, 9.3, 10.6], // 抽查用的时刻 (秒)
+  check: [1.0, 3.8, 5.3, 6.9, 8.2, 10.2, 11.3, 12.8], // 抽查用的时刻 (秒)
   gif: { dither: 'bayer:bayer_scale=4' },
   ready: Promise.all([document.fonts.load('13px "Cascadia Mono"'), document.fonts.load('bold 13px "Cascadia Mono"'), document.fonts.ready]),
   renderFrame(t) {
     drawCapCrab(t)
-    drawTerminal(win, canvasOf, t)
+    const { ctx, m } = mainCanvas()
+    drawTerminal(ctx, m, t)
+    // 看板滑入 / 滑出
+    const kin = easeOut(seg(t, PANE_IN, PANE_IN + 0.3))
+    const kout = easeInOut(seg(t, PANE_OUT, PANE_OUT + 0.25))
+    const vis = kin > 0 && kout < 1
+    paneEl.style.display = vis ? 'block' : 'none'
+    if (vis) {
+      paneEl.style.opacity = kin * (1 - kout)
+      paneEl.style.transform = `translateX(${lerp(36, 0, kin) + 36 * kout}px)`
+      drawPane(t)
+    }
+    // 指针和点击涟漪
+    const [px, py] = pointerAt(t)
+    const alpha = Math.min(seg(t, 6.5, 6.8), 1 - seg(t, 9.5, 9.8))
+    pointer.set(px, py, t >= 6.5 && t < 9.8, Math.abs(t - CLICK_AGENTS) < 0.06, alpha)
+    const rk = seg(t, CLICK_AGENTS, CLICK_AGENTS + 0.55)
+    pointer.ripple(px, py, rk > 0 && rk < 1 ? rk : null)
+    // 循环衔接: 结尾淡回开头那一帧
     const k = easeOut(seg(t, FADE_AT, DURATION - 1 / FPS))
-    fadeCv.style.display = k > 0 ? 'block' : 'none'
-    fadeCv.style.opacity = k
-    if (k > 0) drawTerminal(fadeWin, canvasOf, 0)
+    fadeLayer.canvas.style.display = k > 0 ? 'block' : 'none'
+    fadeLayer.canvas.style.opacity = k
+    if (k > 0) {
+      const fctx = fadeLayer.begin('#0c0c0c')
+      drawTerminal(fctx, metrics(fctx, CW, CH, SIZE), 0)
+    }
   },
 }
 </script>

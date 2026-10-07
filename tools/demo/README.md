@@ -3,10 +3,10 @@
 `assets/` 里的四张 GIF（`usage-hud.gif`、`html-shelf.gif`、`quickstart.gif`、`client.gif`）都由这里的脚本生成。每张图是 `scenes/` 里的一个 HTML 页面，页面提供 `renderFrame(t)`，按时间直接算出画面。`render.mjs` 用无头 Chrome（DevTools 协议）按 2 倍像素逐帧截图，再用 ffmpeg（`palettegen` / `paletteuse`）缩回 1 倍合成 GIF。螃蟹和面板网格是从 `usage-hud/hooks/register.tsx` 移植的（`lib/crab.js`、`lib/hud.js`），客户端版直接调用 `usage-hud/hooks/desktop.ts` 的 `crabSvg` / `dashSvg`。
 
 ```bash
-node tools/demo/render.mjs                 # 全部重新生成 (约 5 分钟)
+node tools/demo/render.mjs                 # 全部重新生成 (约 6 分钟)
 node tools/demo/render.mjs html-shelf      # 只做一张
 node tools/demo/render.mjs --gif-only      # 用已有的帧重新合成
-node tools/demo/check-crab.mjs             # 校验移植的螃蟹和源码逐帧一致
+node tools/demo/check-crab.mjs             # 校验移植的螃蟹 (含情绪/子代理小螃蟹) 和配速/收据函数与源码一致
 node tools/demo/check-strings.mjs          # 校验脚本里没有本机路径和内部名字
 ```
 

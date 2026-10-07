@@ -117,8 +117,9 @@ export function makePointer() {
   document.body.appendChild(r)
   return {
     // (x, y) = 箭头尖端; down = 按下时略缩小
-    set(x, y, visible = true, down = false) {
-      p.style.display = visible ? 'block' : 'none'
+    set(x, y, visible = true, down = false, alpha = 1) {
+      p.style.display = visible && alpha > 0 ? 'block' : 'none'
+      p.style.opacity = alpha
       p.style.transform = `translate(${x - 2}px, ${y - 2}px) scale(${down ? 0.9 : 1})`
       p.style.transformOrigin = '2px 2px'
     },
@@ -137,6 +138,58 @@ export function makePointer() {
       r.style.background = `rgba(${color},${0.22 * (1 - e)})`
     },
   }
+}
+
+// 叠在某个元素上的一块画布 (看板、对照层等): begin(bg) 清屏后返回 ctx; bg 省略 = 透明
+export function canvasLayer(parent, left, top, w, h, z = 5) {
+  const cv = document.createElement('canvas')
+  cv.style.cssText = `position:absolute;left:${left}px;top:${top}px;width:${w}px;height:${h}px;z-index:${z};`
+  parent.appendChild(cv)
+  return {
+    canvas: cv,
+    begin(bg) {
+      const dpr = window.devicePixelRatio || 1
+      if (cv.width !== Math.round(w * dpr)) {
+        cv.width = Math.round(w * dpr)
+        cv.height = Math.round(h * dpr)
+      }
+      const ctx = cv.getContext('2d')
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      ctx.clearRect(0, 0, w, h)
+      if (bg) {
+        ctx.fillStyle = bg
+        ctx.fillRect(0, 0, w, h)
+      }
+      return ctx
+    },
+  }
+}
+
+// 终端右上角的提示条 (toast); 样子是示意: 引擎在终端里怎么画 toast 没有公开
+export function makeToast(parent, right, top) {
+  const el = document.createElement('div')
+  el.style.cssText = `position:absolute;right:${right}px;top:${top}px;z-index:40;display:none;align-items:center;gap:9px;padding:7px 13px 7px 11px;border-radius:8px;
+    background:#1d1d1f;border:1px solid #4a4a4f;box-shadow:0 8px 22px rgba(0,0,0,0.5);font:13px "Cascadia Mono","Microsoft YaHei",monospace;color:#e4e4e7;white-space:nowrap;`
+  el.innerHTML = '<span style="width:3px;align-self:stretch;border-radius:2px;background:#d97757"></span><span class="tx"></span>'
+  parent.appendChild(el)
+  return {
+    // k: 0..1 进场进度, 1 = 完全显示; null = 隐藏
+    set(text, k) {
+      if (k === null || k <= 0) {
+        el.style.display = 'none'
+        return
+      }
+      el.style.display = 'flex'
+      el.querySelector('.tx').textContent = text
+      el.style.opacity = Math.min(1, k)
+      el.style.transform = `translateY(${(1 - Math.min(1, k)) * -8}px)`
+    },
+  }
+}
+// 一段时间里显示的 toast 的进场/退场进度 (0..1)
+export function toastK(t, at, hold = 1.6) {
+  if (t < at || t > at + hold + 0.25) return null
+  return Math.min(easeOut(seg(t, at, at + 0.2)), 1 - easeOut(seg(t, at + hold, at + hold + 0.25)))
 }
 
 // 指针路径: keys = [[t, x, y], ...], 两点之间缓动
