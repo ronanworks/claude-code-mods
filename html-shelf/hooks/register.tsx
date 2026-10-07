@@ -83,7 +83,9 @@ async function openPosix($: any, target: string, sys: OS): Promise<void> {
 }
 // ---- 跨平台 完 ----
 
-let cwd = ''
+// 两个目录: 回复里的相对路径大多相对项目根目录写, 但 Claude 在终端里 cd 之后当前目录会变
+let root = '' // 项目根目录 ($.session.root): 会话开始的地方, 终端里 cd 不会改它
+let cwd = '' // 当前目录 ($.session.cwd): 跟着终端里的 cd 变
 let os: OS = 'windows' // useOS() 之后才准
 let home = '' // macOS / Linux 展开 ~/ 用
 let recent: string[] = [] // 绝对路径, 最新在前
@@ -102,11 +104,15 @@ const keyOf = (abs: string) => (os === 'linux' ? abs : abs.toLowerCase())
 // 先弄清在哪个系统上: 路径怎么拼、用什么命令打开都看它
 async function useOS($: any) {
   cwd = (await $.session.cwd()) || cwd
-  os = await detectOS($, cwd)
+  try {
+    root = (await $.session.root()) || root
+  } catch {}
+  os = await detectOS($, root || cwd)
   home = os === 'windows' ? '' : await homeDir($, os)
 }
 
-function absolute(p: string): string {
+// 相对路径按 base 拼成绝对路径 (默认项目根目录); 绝对路径、file:// 链接原样转成本系统写法
+function absolute(p: string, base = root || cwd): string {
   let s = p.replace(/^file:\/\/(localhost)?/i, '') // file:///C:/x → /C:/x, file:///home/x → /home/x
   try {
     s = decodeURIComponent(s)
@@ -114,11 +120,21 @@ function absolute(p: string): string {
   if (os === 'windows') {
     s = winPath(s.replace(/^\/(?=[A-Za-z]:)/, ''))
     if (/^[a-zA-Z]:[\\/]|^[\\/]{2}/.test(s)) return s
-    return winPath(cwd.replace(/[\\/]+$/, '') + '\\' + s.replace(/^\.[\\/]/, ''))
+    return winPath(base.replace(/[\\/]+$/, '') + '\\' + s.replace(/^\.[\\/]/, ''))
   }
   if (s.startsWith('~/') && home) s = home + s.slice(1)
   if (s.startsWith('/')) return s
-  return cwd.replace(/\/+$/, '') + '/' + s.replace(/^\.\//, '')
+  return base.replace(/\/+$/, '') + '/' + s.replace(/^\.\//, '')
+}
+
+// 一个路径可能指向的文件: 先按项目根目录, 再按当前目录 (Claude cd 进子目录后写的相对路径)
+function candidates(p: string): string[] {
+  const list = [absolute(p, root || cwd)]
+  if (root && cwd) {
+    const alt = absolute(p, cwd)
+    if (keyOf(alt) !== keyOf(list[0])) list.push(alt)
+  }
+  return list
 }
 
 function toHref(abs: string): string {
@@ -163,12 +179,14 @@ async function linkify($: any, text: string): Promise<{ text: string; hrefs: str
   const hold = (s: string) => `\u0000${slots.push(s) - 1}\u0000`
 
   async function link(raw: string, label: string): Promise<string | undefined> {
-    const abs = absolute(raw)
-    if (!(await exists($, abs))) return undefined
-    const href = toHref(abs)
-    hrefs.push(href)
-    found.push(abs)
-    return `[${label}](${href})`
+    for (const abs of candidates(raw)) {
+      if (!(await exists($, abs))) continue
+      const href = toHref(abs)
+      hrefs.push(href)
+      found.push(abs)
+      return `[${label}](${href})`
+    }
+    return undefined
   }
 
   async function replaceAsync(s: string, re: RegExp, fn: (m: RegExpExecArray) => Promise<string>) {
@@ -373,7 +391,6 @@ async function drawWithCopy($: any, e: any, props: { text: string; isFirstOfRepl
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    cwd = await $.session.cwd()
     await useOS($)
     try {
       await $.command.register({

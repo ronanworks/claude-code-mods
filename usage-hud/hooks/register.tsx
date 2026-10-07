@@ -678,12 +678,22 @@ async function openPosix($: any, target: string, sys: OS): Promise<void> {
 }
 // ---- 跨平台 完 ----
 
+// 项目根目录 ($.session.root): 会话开始的地方, Claude 在终端里 cd 进子目录不会改它;
+// 拿不到 (老版本引擎) 再用当前目录 ($.session.cwd)
+async function projectDir($: any): Promise<string> {
+  try {
+    const r = await $.session.root()
+    if (r) return r
+  } catch {}
+  return await $.session.cwd()
+}
+
 // Windows: Claude Code 启动子进程时把窗口设成隐藏, 直接跑 explorer.exe 打开的文件夹窗口也会是隐藏的;
 // 经 cmd 的 start 转一手, 新窗口按正常方式显示 (已在本机验证). macOS 用 open, Linux 用 xdg-open
 async function openProject($: any) {
   if (!(await pressOk($, 'project'))) return
   try {
-    const here = cwd || (await $.session.cwd())
+    const here = cwd || (await projectDir($))
     const sys = await detectOS($, here)
     if (sys !== 'windows') {
       await openPosix($, here, sys)
@@ -711,7 +721,7 @@ async function runSlash($: any, command: string, fallbackUrl?: string) {
   } catch (err) {
     if (fallbackUrl) {
       try {
-        const sys = await detectOS($, cwd || (await $.session.cwd()))
+        const sys = await detectOS($, cwd || (await projectDir($)))
         if (sys === 'windows') await $.process.run(['cmd.exe', '/d', '/c', 'start', 'usage hud', fallbackUrl], { timeoutMs: 10_000 })
         else await openPosix($, fallbackUrl, sys)
       } catch {}
@@ -723,13 +733,14 @@ async function runSlash($: any, command: string, fallbackUrl?: string) {
 
 async function refreshRepo($: any) {
   try {
-    cwd = await $.session.cwd()
+    // 项目名和分支都按项目根目录算, Claude 在终端里 cd 进子目录也不变
+    cwd = await projectDir($)
     project = safe(cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd)
-    const b = await $.process.run(['git', 'branch', '--show-current'], { timeoutMs: 5000 })
+    const b = await $.process.run(['git', 'branch', '--show-current'], { cwd, timeoutMs: 5000 })
     branch = b.exitCode === 0 ? safe(b.stdout.trim()) : ''
     dirty = 0
     if (branch) {
-      const s = await $.process.run(['git', 'status', '--porcelain', '-uno'], { timeoutMs: 5000 })
+      const s = await $.process.run(['git', 'status', '--porcelain', '-uno'], { cwd, timeoutMs: 5000 })
       dirty = s.exitCode === 0 ? s.stdout.split('\n').filter((l: string) => l.trim()).length : 0
     }
   } catch {
@@ -782,7 +793,7 @@ type Where = { guess: string; id: string; root: string }
 async function guessTranscript($: any): Promise<Where> {
   try {
     const id = await $.session.id()
-    const here = await $.session.cwd()
+    const here = await projectDir($)
     const sys = await detectOS($, here)
     const sep = sepOf(sys)
     const base = await claudeDir($, sys)
@@ -804,7 +815,7 @@ async function countTokens($: any, where: Where) {
   tokState = 'counting'
   tokLive = zeroTok()
   try {
-    const sep = sepOf(await detectOS($, cwd || (await $.session.cwd())))
+    const sep = sepOf(await detectOS($, cwd || (await projectDir($))))
     const script = $.plugin.root.replace(/[\\/]+$/, '') + sep + 'scripts' + sep + 'count-tokens.js'
     const r = await $.process.run(['node', script, where.guess, where.id, where.root], { timeoutMs: 120_000 })
     const j = JSON.parse(r.stdout)

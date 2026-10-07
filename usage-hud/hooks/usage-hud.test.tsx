@@ -17,7 +17,8 @@ const CWD = 'D:\\work\\my-app'
 
 // 模拟三种系统: 工作目录、环境变量、是不是 macOS、打不开的命令 (退出码 3)
 // Windows 这里故意不给 OS 变量, 靠 C:\ 这种路径认出来
-type Sys = { cwd: string; env: Record<string, string>; mac?: boolean; broken?: string[] }
+// root = 项目根目录 (不给就和 cwd 一样)
+type Sys = { cwd: string; root?: string; env: Record<string, string>; mac?: boolean; broken?: string[] }
 const WIN: Sys = { cwd: CWD, env: { USERPROFILE: 'C:\\Users\\me' } }
 const MAC: Sys = { cwd: '/Users/me/my-app', env: { HOME: '/Users/me' }, mac: true }
 const LINUX: Sys = {
@@ -27,7 +28,9 @@ const LINUX: Sys = {
 }
 const WSL: Sys = { cwd: '/home/me/my-app', env: { HOME: '/home/me', WSL_DISTRO_NAME: 'Ubuntu-22.04' }, broken: ['wslview'] }
 
-function mocks(on: any, calls: { run: string[][]; cmd: string[] }, sys: Sys = WIN) {
+type Calls = { run: string[][]; cmd: string[]; dirs: string[] }
+
+function mocks(on: any, calls: Calls, sys: Sys = WIN) {
   // 存储用内存里的假存储: 测试里的 /hud top 不能写进用户真实的偏好文件
   mock.store(on)
   on('clock.now', async () => ({ value: Date.now() }))
@@ -39,6 +42,7 @@ function mocks(on: any, calls: { run: string[][]; cmd: string[] }, sys: Sys = WI
   on('session.usage', async () => ({ value: USAGE }))
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
   on('session.cwd', async () => ({ value: sys.cwd }))
+  on('session.root', async () => ({ value: sys.root ?? sys.cwd }))
   // 测试跑在 Windows 上, 引擎可能把 /System/... 规整成本机写法, 只比结尾
   on('fs.exists', async ($: any, e: any) => ({ value: !!sys.mac && /[\\/]System[\\/]Library[\\/]CoreServices$/.test(String(e.path ?? e)) }))
   on('settings.read', async () => ({ value: { effortLevel: 'medium' } }))
@@ -53,6 +57,7 @@ function mocks(on: any, calls: { run: string[][]; cmd: string[] }, sys: Sys = WI
   on('process.run', async ($: any, e: any) => {
     const argv: string[] = e.argv ?? e
     calls.run.push(argv)
+    calls.dirs.push(String(e.init?.cwd ?? ''))
     if (sys.broken?.includes(argv[0])) return { value: { exitCode: 3, stdout: '', stderr: '' } }
     const s = JSON.stringify(argv)
     if (argv[0] === 'node') {
@@ -65,7 +70,7 @@ function mocks(on: any, calls: { run: string[][]; cmd: string[] }, sys: Sys = WI
 }
 
 async function start($: any, on: any, sys: Sys = WIN) {
-  const calls = { run: [] as string[][], cmd: [] as string[] }
+  const calls: Calls = { run: [], cmd: [], dirs: [] }
   mocks(on, calls, sys)
   await $.session.start({ cwd: sys.cwd } as any)
   return calls
@@ -262,6 +267,22 @@ test('Linux: 设置了 CLAUDE_CONFIG_DIR 就在它下面找会话记录；xdg-op
     ['xdg-open', '/home/me/my-app'],
     ['gio', 'open', '/home/me/my-app'],
   ])
+  await ui.unmount()
+})
+
+test('Claude 在终端里 cd 进子目录后：项目名、分支、会话记录、打开的文件夹都还按项目根目录', async ($, on) => {
+  const CD: Sys = { root: CWD, cwd: CWD + '\\docs\\research', env: { USERPROFILE: 'C:\\Users\\me' } }
+  const calls = await start($, on, CD)
+  const node = calls.run.findIndex(a => a[0] === 'node')
+  expect(calls.run[node]?.[2]).toBe('C:\\Users\\me\\.claude\\projects\\D--work-my-app\\abc-123.jsonl')
+  const gitDirs = calls.run.map((a, i) => (a[0] === 'git' ? calls.dirs[i] : null)).filter(d => d !== null)
+  expect(gitDirs.length > 0 && gitDirs.every(d => d === CWD)).toBe(true)
+  const ui = await mountHint($, 'terminal', 140)
+  const all = await strings(ui)
+  expect(all).toContain('my-app')
+  expect(all.includes('research')).toBe(false)
+  await ui.press({ key: 'btn-project' })
+  expect(calls.run.filter(a => a[0] === 'cmd.exe')).toEqual([['cmd.exe', '/d', '/c', 'start', 'usage hud', CWD]])
   await ui.unmount()
 })
 

@@ -34,7 +34,8 @@ const MIXED = [
 const NESTED = ['示例：', '````markdown', '```bash', 'echo hi', '```', '````', '~~~', 'plain tilde', '~~~'].join('\n')
 
 // 模拟三种系统: 工作目录、环境变量、是不是 macOS、打不开的命令 (退出码 3)
-type Sys = { cwd: string; env: Record<string, string>; mac?: boolean; broken?: string[] }
+// root = 项目根目录; files = 只有这些文件存在 (不给就按文件名猜)
+type Sys = { cwd: string; root?: string; env: Record<string, string>; mac?: boolean; broken?: string[]; files?: string[] }
 const WIN: Sys = { cwd: 'D:\\proj', env: { OS: 'Windows_NT', USERPROFILE: 'C:\\Users\\me' } }
 const MAC: Sys = { cwd: '/Users/me/proj', env: { HOME: '/Users/me' }, mac: true }
 const LINUX: Sys = { cwd: '/home/me/proj', env: { HOME: '/home/me' }, broken: ['xdg-open'] }
@@ -43,11 +44,13 @@ const WSL: Sys = { cwd: '/home/me/proj', env: { HOME: '/home/me', WSL_DISTRO_NAM
 function mocks(on: any, sys: Sys = WIN) {
   const log = { opened: [] as unknown[], copied: [] as string[], toasts: [] as string[] }
   on('session.cwd', async () => ({ value: sys.cwd }))
+  on('session.root', async () => ({ value: sys.root ?? sys.cwd }))
   on('env.get', async ($: any, e: any) => ({ value: sys.env[String(e.name ?? e)] }))
   on('fs.exists', async ($: any, e: any) => {
     const p = String(e.path ?? e)
     // 测试跑在 Windows 上, 引擎可能把 /System/... 规整成本机写法, 只比结尾
     if (/[\\/]System[\\/]Library[\\/]CoreServices$/.test(p)) return { value: !!sys.mac }
+    if (sys.files) return { value: sys.files.some(f => f.toLowerCase() === p.toLowerCase()) }
     return { value: /weekly-report|report\.html$|notes[\\/]a\.html$/.test(p) }
   })
   on('process.run', async ($: any, e: any) => {
@@ -194,6 +197,23 @@ test('Linux: xdg-open 打不开时改用 gio open；路径区分大小写', asyn
     ['xdg-open', '/home/me/notes/a.html'],
     ['gio', 'open', '/home/me/notes/a.html'],
   ])
+  await ui.unmount()
+})
+
+test('Claude 在终端里 cd 进子目录后：相对路径先按项目根目录找，找不到再按当前目录找', async ($, on) => {
+  const CD: Sys = {
+    root: 'D:\\proj',
+    cwd: 'D:\\proj\\docs\\research',
+    env: { OS: 'Windows_NT' },
+    files: ['D:\\proj\\docs\\research\\report-zh.html', 'D:\\proj\\docs\\research\\notes.html'],
+  }
+  const log = mocks(on, CD)
+  const ui = await mount($, 'terminal', 'm9', '已写好：`docs/research/report-zh.html`（双击打开），草稿在 `notes.html`。')
+  const md: any = await ui.find({ type: 'Markdown' } as any)
+  expect(md.text).toContain('](file:///D:/proj/docs/research/report-zh.html)')
+  expect(md.text).toContain('](file:///D:/proj/docs/research/notes.html)')
+  await ui.press({ key: 'html-links-m9', link: { href: 'file:///D:/proj/docs/research/report-zh.html' } })
+  expect(log.opened).toEqual([['explorer.exe', 'D:\\proj\\docs\\research\\report-zh.html']])
   await ui.unmount()
 })
 
