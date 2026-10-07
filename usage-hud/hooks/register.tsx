@@ -1,16 +1,40 @@
 import type { Register } from 'claude-code'
 import { crabSvg, dashSvg, type DashData } from './desktop'
+import {
+  FRAME_MS,
+  SPRITE_W,
+  MINI_W,
+  DIM,
+  VALUE,
+  WARN,
+  COL,
+  mix,
+  isWide,
+  dw,
+  clip,
+  encode,
+  scenePx,
+  miniPx,
+  type Mood,
+  type ToolKind,
+  type Scene,
+  type Rows,
+} from './sprites'
+import { tipFit } from './sprites'
+import type { WalkProps } from './walkway' // 散步道的 Client 模块 (只取类型)
+export { previewLane, tipFit } from './sprites'
+export type { Mood } from './sprites'
 
 // usage-hud v0.5: 用量面板 (终端版 + 客户端版)
 //
 // 客户端 (桌面 app 的 Code 标签页): 输入框上方一张卡片, 左边 SVG 像素螃蟹 (动作由 SMIL 动画循环播放),
 //   右边 SVG 仪表盘 (自带深色底板), 下面一行可点的链接; 绘制代码在 ./desktop.ts
 //
-// 位置: 默认在输入框下方 (画在提示行 PromptHint 里, 引擎自己的提示行保留在最下面);
-//       /hud top 改到输入框上方 (上面是螃蟹散步道, 和回复隔开; 散步道关掉时空一行), /hud bottom 改回下方
-//       输入框正上方的横栏 (AbovePrompt) 里是螃蟹散步道 (v0.14, 只在终端; /hud crab 开关)
+// 位置 (终端, v0.16 起固定): 面板在输入框下方 (画在提示行 PromptHint 里, 引擎自己的提示行保留在最下面);
+//       螃蟹在输入框正上方的横栏 (AbovePrompt) 里散步 (Client 模块 walkway.tsx; /hud crab 开关); /hud top|bottom 只回一句话
+//       螃蟹的像素画 (面板那只 + 散步道) 在 sprites.ts, hooks 和 Client 共用
 //
-// 完整版是 "螃蟹 + 3 行 x 3 列" 的对齐网格, 每列起点在三行里完全一致:
+// 完整版是 "3 行 x 3 列" 的对齐网格 (v0.16 起终端面板里没有螃蟹), 每列起点在三行里完全一致:
 //   模型   Opus 5.5 ▁▂▃▅▇ medium   项目   my-app main               会话   6d18h   $199.91
 //   上下文 ━━━━━━━━  14% 140k/1.0M   5小时  ━━━━━━│━━━━━━  14% 3h05m    本周   ━━│━━━━━━━━━━  43% 1d18h
 //   状态   ▃▅▂ 读文件        12s     工具   Bash 12  Read 4         子代理 2 个运行中
@@ -25,7 +49,7 @@ import { crabSvg, dashSvg, type DashData } from './desktop'
 //   数字变化时会滚动过渡; 工作时上下文条有流光; 5小时/本周 >=90% 时用量条呼吸闪烁
 //
 // 可点击: 模型名 -> /model, 项目名 -> 打开项目文件夹, 上下文 -> /context, 5小时/本周 -> /usage
-// /hud: 完整 -> 精简(1 行) -> 隐藏 循环; /hud top | bottom 切换位置
+// /hud: 完整 -> 精简(1 行) -> 隐藏 循环; /hud agents 子代理看板; /hud crab 开关散步道
 //
 // v0.12 新增:
 //   配速预警: 按 5小时/本周 窗口已过的时间算 "应该用到多少", 预计重置前会用完时, 用量条后面改成红色 "约40m后用完"
@@ -51,6 +75,14 @@ import { crabSvg, dashSvg, type DashData } from './desktop'
 //   气泡 (「」, 约 5 秒, 新的顶掉旧的): 搞定 3m12s / 压缩完了 / 额度刷新了 / 慢点！40m用完 (红) / 上下文快满了 / 等你点头
 //   鼠标停在横栏上 (只在全屏模式) -> 一行用量摘要 + 小贴士
 //
+// v0.16:
+//   终端面板去掉螃蟹, 网格占满整行; 各档分界前移 17 列 (完整版 81 列起, 中等版 51-80 列, 精简版不到 51 列)
+//   终端面板固定在输入框下方, 螃蟹固定在上方 (store 里存的 position 一律不读)
+//   散步道顶上加一行 "天空行" 隔开正文和螃蟹 (maxRows >=4: 天空 + 3 行版; 3: 天空 + 2 行版; 2 / 1: 没有天空行)
+//   散步道大螃蟹拿到面板螃蟹的整套动作 (scenePx): 用工具时停下做动作、道具画在右边; 在想时走, 头顶冒思考点点
+//   粒子加量 (走路同时 3-5 粒, 小跑 5-7 粒, 上限 24); 小螃蟹改成 7x4, 眼睛四周都是身体
+//   散步道整个搬进 Client 模块: 鼠标停在大螃蟹上 -> 停下举钳 + 气泡 (停下时定好), 离开约 0.5 秒后接着走
+//
 // v0.15 散步道 v2:
 //   横栏放得下 3 行就画 3 行版: 大螃蟹用面板那套 12x6 画法 (走路腿交替、眼睛看前面、会眨眼、钳子偶尔夹一下,
 //     冒汗 / 慌张 / 庆祝 / 睡觉和面板一样); 小螃蟹 9x4 排队跟着走; 不够 3 行退到 2 行 / 1 行版
@@ -71,16 +103,11 @@ import { crabSvg, dashSvg, type DashData } from './desktop'
 
 const LAYOUTS = ['full', 'compact', 'off'] as const
 type Layout = (typeof LAYOUTS)[number]
-const POSITIONS = ['below', 'above'] as const
-type Position = (typeof POSITIONS)[number]
 
-const FRAME_MS = 150
 const SLEEP_AFTER_MS = 5 * 60_000
 const PRESS_GAP_MS = 800 // 双击只算一次
 const COST_MILESTONES = [5, 10, 20, 50, 100, 200, 500, 1000]
 const USAGE_URL = 'https://claude.ai/settings/usage'
-const SPRITE_W = 15 // 12 列螃蟹 + 3 列道具
-const MINI_W = 8
 const LABEL_W = 6
 const GAP = 3
 const HPAD = 2 // 面板左右各留的空格数
@@ -88,7 +115,6 @@ const COMPACT_AT = 75 // 上下文到这个百分比出现 [压缩] 按钮
 const STUCK_MS = 5 * 60_000 // 子代理运行中超过这么久没有工具动作 -> "可能卡住"
 const AGENTS_PANE = 'hud-agents'
 const KEEP_ENDED = 10 // 看板里保留最近结束的子代理个数
-const WARN = '#f87171' // 会用完时 百分比 和 "40m用完" 的颜色
 // 额度窗口长度
 const WINDOW_MS: Record<string, number> = { five_hour: 5 * 3600_000, seven_day: 7 * 86400_000 }
 // 窗口刚开始时外推不可靠, 已过时间不够就不算配速 (不报警、不影响情绪):
@@ -101,7 +127,6 @@ const PACE_WARN = 1.15
 
 // ---------------- 会话状态 (模块变量) ----------------
 let layout: Layout = 'full'
-let position: Position = 'below'
 let engineWorking = false
 let turnStartedAt = 0
 let lastTurnMs = 0
@@ -179,37 +204,11 @@ type Kid = {
 }
 const kids = new Map<string, Kid>()
 
-// ---------------- 颜色 ----------------
-const COL = {
-  body: 0xd97757,
-  hot: 0xe5484d,
-  eye: 0x1c1917,
-  sweat: 0x60a5fa,
-  spark: 0xfacc15,
-  bubble: 0x8b8b94,
-  paper: 0xd4d4d8,
-  ink: 0x52525b,
-  scan: 0x60a5fa,
-  term: 0x3f3f46,
-  cursor: 0x4ade80,
-  sea: 0x3b82f6,
-  land: 0x4ade80,
-  gear: 0xa1a1aa,
-  thought: 0xa1a1aa,
-  shades: 0x09090b, // 墨镜镜片
-  bridge: 0x52525b, // 墨镜鼻梁
-  alarm: 0xef4444, // 慌张的 "!"
-  kid: 0xf2a07b, // 小螃蟹用浅一号的颜色: 它的钳子会挨着大螃蟹的右钳 (x=11 和 x=12), 同色会连成一片
-  kidEye: 0xf5f5f4, // 0.12 的小螃蟹眼睛 (会闪的浅色像素); 0.13 起不画眼睛, 留着给测试确认画面里没有它
-  kidLeg: 0xa4553d,
-}
-const DEF = 0x01000000
+// ---------------- 颜色 (螃蟹的颜色 COL 在 sprites.ts) ----------------
 const TRACK = 0x3f3f46
 const TICK = 0xe5e5e5 // 用量条上的时间刻度 │: 绿/黄/红的彩色段和暗色段里都看得清
-const DIM = '#71717a'
 const ACCENT = '#d97757'
 const VIOLET = '#a78bfa'
-const VALUE = '#d4d4d8'
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const EFFORT_COLOR: Record<string, string> = {
   low: '#a1a1aa',
@@ -220,10 +219,6 @@ const EFFORT_COLOR: Record<string, string> = {
 }
 
 const hex = (n: number) => '#' + n.toString(16).padStart(6, '0')
-function mix(a: number, b: number, t: number): number {
-  const ch = (s: number) => Math.round(((a >> s) & 255) * (1 - t) + ((b >> s) & 255) * t)
-  return (ch(16) << 16) | (ch(8) << 8) | ch(0)
-}
 function heat(t: number): number {
   const g = 0x4ade80
   const y = 0xfbbf24
@@ -231,23 +226,6 @@ function heat(t: number): number {
   return t < 0.6 ? mix(g, y, t / 0.6) : mix(y, r, Math.min(1, (t - 0.6) / 0.4))
 }
 
-// ---------------- 文字宽度 (中文/全角算 2 列) ----------------
-function isWide(cp: number): boolean {
-  return (
-    (cp >= 0x1100 && cp <= 0x115f) ||
-    (cp >= 0x2e80 && cp <= 0xa4cf) ||
-    (cp >= 0xac00 && cp <= 0xd7a3) ||
-    (cp >= 0xf900 && cp <= 0xfaff) ||
-    (cp >= 0xfe30 && cp <= 0xfe4f) ||
-    (cp >= 0xff00 && cp <= 0xff60) ||
-    (cp >= 0xffe0 && cp <= 0xffe6)
-  )
-}
-function dw(s: string): number {
-  let w = 0
-  for (const ch of s) w += isWide(ch.codePointAt(0) ?? 0) ? 2 : 1
-  return w
-}
 // 外部来的名字只留安全字符, 其余换成 ?
 function safe(s: string): string {
   let out = ''
@@ -256,19 +234,6 @@ function safe(s: string): string {
     out += (cp >= 0x20 && cp <= 0x7e) || (cp >= 0xc0 && cp <= 0x24f) || isWide(cp) ? ch : '?'
   }
   return out
-}
-function clip(s: string, max: number): string {
-  if (max <= 0) return ''
-  if (dw(s) <= max) return s
-  let out = ''
-  let w = 0
-  for (const ch of s) {
-    const cw = isWide(ch.codePointAt(0) ?? 0) ? 2 : 1
-    if (w + cw > max - 2) break
-    out += ch
-    w += cw
-  }
-  return out + '..'
 }
 const padL = (s: string, n: number) => ' '.repeat(Math.max(0, n - dw(s))) + s
 const padR = (s: string, n: number) => s + ' '.repeat(Math.max(0, n - dw(s)))
@@ -316,7 +281,6 @@ function big(n: number): string {
 // 已过时间 = 窗口长度 - (重置时刻 - 现在); 应用量 = 已过 / 窗口 x 100; 配速 = 实际用量 / 应用量
 // 预计用完 = 现在 + (100 - 实际用量) / (实际用量 / 已过时间)
 // 注意: 线性外推下 "会在重置前用完" 和 "配速 > 1" 是同一件事 (100 x 已过 < 用量 x 窗口)
-export type Mood = 'chill' | 'normal' | 'sweat' | 'panic'
 // elapsedFrac = 窗口已过的比例 (0-1), 用量条上的时间刻度画在这里; 窗口刚开始 (配速不外推) 时也有
 export type Pace = { pct: number; ratio?: number; runOutIn?: number; resetIn?: number; elapsedFrac?: number; willRunOut: boolean }
 type Limit = { kind: string; percentUsed: number; resetsAt?: string }
@@ -407,7 +371,6 @@ function ease(key: string, target: number | undefined): number | undefined {
 }
 
 // ---------------- 工具分类 ----------------
-type ToolKind = 'think' | 'read' | 'edit' | 'bash' | 'web' | 'agent' | 'other'
 function toolKind(t: string): ToolKind {
   if (!t) return 'think'
   if (/^(Read|Grep|Glob|LS|NotebookRead)$/.test(t)) return 'read'
@@ -454,236 +417,6 @@ function toolLabel(t: string): string {
   return safe(m ? m[0] + ':' + m[1] : t)
 }
 
-// ---------------- 像素画 ----------------
-type Px = number[][]
-function canvas(w: number, h: number): Px {
-  const p: Px = []
-  for (let y = 0; y < h; y++) p.push(new Array(w).fill(-1))
-  return p
-}
-function put(p: Px, x: number, y: number, c: number) {
-  if (y >= 0 && y < p.length && x >= 0 && x < p[y].length) p[y][x] = c
-}
-function rect(p: Px, x0: number, y0: number, w: number, h: number, c: number) {
-  for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) put(p, x, y, c)
-}
-function encode(px: Px, cols: number, cellRows: number): string {
-  const words: number[] = []
-  for (let r = 0; r < cellRows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const top = px[r * 2]?.[c] ?? -1
-      const bot = px[r * 2 + 1]?.[c] ?? -1
-      if (top < 0 && bot < 0) words.push(32, DEF, DEF)
-      else if (bot < 0) words.push(0x2580, top, DEF) // ▀
-      else if (top < 0) words.push(0x2584, bot, DEF) // ▄
-      else words.push(0x2580, top, bot)
-    }
-  }
-  return new Uint8Array(Uint32Array.from(words).buffer).toBase64()
-}
-
-// eyeDy: 眼睛在身体第几行 (默认 1, 散步道里低头看输入框时 2); legs < 0 = 腾空不画腿
-type Pose = { bob: number; legs: number; eyes: 'open' | 'closed'; look: number; armL: 'out' | 'up'; armR: 'out' | 'up'; body: number; eyeDy?: number }
-
-// 12x5 像素的螃蟹 (第 6 行留给上下颠); ox = 往右挪几格 (面板里是 0, 散步道里是螃蟹的位置)
-function drawCrab(p: Px, o: Pose, ox = 0) {
-  const y = o.bob
-  rect(p, ox + 2, y, 8, 4, o.body)
-  if (o.armL === 'out') rect(p, ox, y + 2, 2, 1, o.body)
-  else rect(p, ox, y, 1, 2, o.body)
-  if (o.armR === 'out') rect(p, ox + 10, y + 2, 2, 1, o.body)
-  else rect(p, ox + 11, y, 1, 2, o.body)
-  // 走路: 四条腿两两交替抬起
-  if (o.legs >= 0) {
-    const legs = [[2, 4, 7, 9], [2, 7], [2, 4, 7, 9], [4, 9]][o.legs % 4]
-    for (const x of legs) put(p, ox + x, y + 4, o.body)
-  }
-  const eye = o.eyes === 'open' ? COL.eye : mix(o.body, COL.eye, 0.45)
-  const ey = y + (o.eyeDy ?? 1)
-  put(p, ox + 4 + o.look, ey, eye)
-  put(p, ox + 7 + o.look, ey, eye)
-}
-
-type Scene = { working: boolean; kind: ToolKind; pct: number; celebrating: boolean; sleeping: boolean; agents: number; mood?: Mood }
-
-function bodyColor(pct: number): number {
-  if (pct >= 95) return frame % 4 < 2 ? COL.hot : COL.body
-  return pct >= 80 ? COL.hot : COL.body
-}
-
-// 按字符画盖像素: rows 里每个字符查 colors 得到颜色, 查不到 (比如 '.') 就空着
-function paint(p: Px, x0: number, y0: number, rows: string[], colors: Record<string, number>) {
-  rows.forEach((row, dy) => {
-    for (let dx = 0; dx < row.length; dx++) {
-      const c = colors[row[dx]]
-      if (c !== undefined) put(p, x0 + dx, y0 + dy, c)
-    }
-  })
-}
-
-function scenePx(s: Scene): Px {
-  const p = canvas(SPRITE_W, 6)
-  const f = frame
-  const t = Math.floor(f / 2)
-  const md = s.mood ?? 'normal'
-  // 0.14 起子代理小螃蟹搬到输入框上方的散步道, 面板右侧 3 列永远给道具
-  const zoneFree = true
-  const o: Pose = { bob: 0, legs: 0, eyes: 'open', look: 0, armL: 'out', armR: 'out', body: bodyColor(s.pct) }
-  let shades = false
-  let bigBang = false // 右侧的大 "!"
-
-  if (s.celebrating) {
-    o.armL = 'up'
-    o.armR = 'up'
-    o.bob = t % 2
-    const spots = [[12, 0], [14, 1], [13, 3], [12, 5], [14, 4], [13, 1], [1, 0], [10, 0]]
-    spots.forEach(([x, y], i) => {
-      if ((i + f) % 3 === 0 && (zoneFree || x < 12)) put(p, x, y, COL.spark)
-    })
-  } else if (s.working) {
-    o.legs = t % 4
-    o.bob = t % 2
-    switch (s.kind) {
-      case 'think': {
-        o.look = 1
-        const dots = [[12, 4], [13, 2], [14, 0]]
-        const n = Math.floor(f / 3) % 4
-        if (zoneFree) for (let i = 0; i < n; i++) put(p, dots[i][0], dots[i][1], COL.thought)
-        break
-      }
-      case 'read': {
-        o.look = 1
-        if (zoneFree) {
-          rect(p, 12, 1, 3, 4, COL.paper)
-          rect(p, 12, 1 + (t % 4), 3, 1, COL.scan)
-        }
-        break
-      }
-      case 'edit': {
-        o.look = 1
-        o.armR = f % 2 ? 'up' : 'out'
-        if (zoneFree) {
-          rect(p, 12, 1, 3, 4, COL.paper)
-          const k = t % 13
-          for (let i = 0; i < k; i++) put(p, 12 + (i % 3), 1 + Math.floor(i / 3), COL.ink)
-        }
-        break
-      }
-      case 'bash': {
-        o.armL = f % 2 ? 'up' : 'out'
-        o.armR = f % 2 ? 'out' : 'up'
-        if (zoneFree) {
-          rect(p, 12, 1, 3, 4, COL.term)
-          put(p, 12, 2, COL.cursor)
-          if (f % 4 < 2) put(p, 13, 4, COL.cursor)
-        }
-        break
-      }
-      case 'web': {
-        o.look = 1
-        if (zoneFree) {
-          const ring = [[13, 1], [14, 2], [13, 3], [12, 2]]
-          for (const [x, y] of ring) put(p, x, y, COL.sea)
-          put(p, 13, 2, COL.sea)
-          const [lx, ly] = ring[t % 4]
-          put(p, lx, ly, COL.land)
-        }
-        break
-      }
-      case 'agent':
-        break
-      default: {
-        if (zoneFree) {
-          const orbit = [[12, 1], [13, 1], [14, 1], [14, 2], [14, 3], [13, 3], [12, 3], [12, 2]]
-          put(p, 13, 2, COL.gear)
-          const [gx, gy] = orbit[f % 8]
-          put(p, gx, gy, COL.gear)
-        }
-      }
-    }
-  } else if (md === 'panic') {
-    // 闲置时慌张: 双钳举起, 左右发抖, 腿乱蹬; 右侧空着就竖一个大 "!"
-    o.armL = 'up'
-    o.armR = 'up'
-    o.look = f % 2 ? 1 : -1
-    o.legs = f % 4
-    bigBang = zoneFree
-  } else if (s.sleeping) {
-    o.eyes = 'closed'
-    o.bob = Math.floor(f / 8) % 2 // 慢慢呼吸
-    if (zoneFree) {
-      const z = Math.floor(f / 3)
-      put(p, 13, 5 - (z % 6), COL.bubble)
-      put(p, 14, 5 - ((z + 3) % 6), COL.bubble)
-    }
-  } else {
-    const cyc = f % 160
-    if (md === 'chill') shades = true // 戴墨镜: 不眨眼, 不张望
-    else {
-      if (f % 30 === 0) o.eyes = 'closed' // 眨眼
-      if (cyc >= 60 && cyc < 68) o.look = -1 // 左右张望
-      else if (cyc >= 68 && cyc < 76) o.look = 1
-    }
-    if (cyc >= 120 && cyc < 136) o.armR = Math.floor(f / 3) % 2 ? 'up' : 'out' // 挥手
-  }
-
-  drawCrab(p, o)
-
-  if (shades) {
-    const y = o.bob + 1
-    rect(p, 3, y, 2, 1, COL.shades)
-    rect(p, 5, y, 2, 1, COL.bridge)
-    rect(p, 7, y, 2, 1, COL.shades)
-  }
-  if (bigBang) {
-    const c = f % 4 < 2 ? COL.alarm : COL.spark
-    put(p, 13, 0, c)
-    put(p, 13, 1, c)
-    put(p, 13, 3, c)
-  }
-  // 头边 (x=1, 第 0-1 行, 任何姿势下都空着): 上下文告急 / 冒汗 -> 汗滴; 慌张 -> 汗滴和红色 "!" 交替
-  if (!s.celebrating) {
-    const sweat = s.pct >= 80 || md === 'sweat' || md === 'panic'
-    if (md === 'panic' && !bigBang && t % 4 >= 2) {
-      put(p, 1, 0, COL.alarm)
-      put(p, 1, 1, COL.alarm)
-    } else if (sweat) {
-      const d = t % 4
-      if (d < 2) put(p, 1, d, COL.sweat)
-    }
-  }
-  return p
-}
-
-// 精简版的一行小螃蟹 (8 列 x 2 像素); 0.14 起子代理小螃蟹在散步道里, 这里不再画
-function miniPx(s: Scene): Px {
-  const p = canvas(MINI_W, 2)
-  const f = frame
-  const t = Math.floor(f / 2)
-  const md = s.mood ?? 'normal'
-  const body = bodyColor(s.pct)
-  const bw = MINI_W
-  rect(p, 0, 0, bw, 1, body)
-  const idle = !s.working && !s.celebrating
-  const closed = s.sleeping || (idle && md !== 'chill' && f % 30 === 0)
-  const look = s.working ? 1 : 0
-  const ex = [2, 5]
-  let eye = closed ? mix(body, COL.eye, 0.45) : COL.eye
-  if (md === 'panic' && !s.celebrating && f % 4 < 2) eye = COL.spark // 慌张: 眼睛黄红闪
-  if (idle && !s.sleeping && md === 'chill') rect(p, ex[0], 0, ex[1] - ex[0] + 1, 1, COL.shades) // 墨镜
-  else {
-    put(p, ex[0] + look, 0, eye)
-    put(p, ex[1] + look, 0, eye)
-  }
-  const scramble = md === 'panic' && !s.celebrating
-  const wide = s.celebrating ? [0, 7] : (s.working || scramble) && t % 2 ? [0, 2, 5, 7] : [1, 3, 4, 6]
-  const legs = wide
-  for (const x of legs) put(p, x, 1, body)
-  // 冒汗: 左下角一颗蓝色汗滴闪
-  if (!s.celebrating && (s.pct >= 80 || md === 'sweat' || md === 'panic') && t % 4 < 2) put(p, 0, 1, COL.sweat)
-  return p
-}
-
 const KAOMOJI: Record<string, string> = {
   idle: '(o_o)',
   blink: '(-_-)',
@@ -704,688 +437,6 @@ function kaomoji(s: Scene): string {
   if (s.sleeping) return KAOMOJI.sleep
   if (md === 'chill') return KAOMOJI.chill
   return frame % 30 === 0 ? KAOMOJI.blink : KAOMOJI.idle
-}
-
-// ---------------- 螃蟹散步道 (v0.14 起: 输入框正上方的横栏, 只在终端) ----------------
-// 3 行版 (v0.15) = 6 像素高: 大螃蟹用面板那套 12x6 画法 (drawCrab); 小螃蟹 9x4 (BIG2 那个精灵), 占下面两行
-// 2 行版 = 4 像素高: 大螃蟹 9x4 (BIG2); 小螃蟹 3x2, 只占下面那行
-// 1 行版 = 2 像素高: 大螃蟹缩成 7x2 (占 9 格, 居中); 小螃蟹 3x2
-// 排队: 一维的路上谁也不能从谁身上穿过去, 所以左右顺序固定 [最新的小螃蟹 ... 最早的小螃蟹, 大螃蟹]
-//   往右走时小螃蟹跟在大螃蟹后面; 碰到一端整队一起掉头, 往左走时大螃蟹在后面赶着它们走
-//   (按 "k 帧之前的位置" 跟着走的话, 掉头时每只都会和前面那只交叉重叠, 所以不用)
-// 大螃蟹什么时候走: 主会话在跑, 或者有子代理在跑 (速度跟心情); 全闲时每 20-40 秒溜达 3-8 格, 停下东张西望;
-//   5 分钟没有任何动静 (主会话 / 子代理 / 打字 / 发消息) 才睡; 打字时停下低头看输入框; 发出消息时跳一下
-// 粒子 (v0.15): 盲文点画在没有螃蟹的空格子里, 最多 16 个, 每个活 2-5 帧, 每帧最多挪 1 个点位, 只会慢慢变暗
-// 节奏: 每只每帧最多挪 1 格; 腿每 2-3 帧换一次; 身体颜色不闪
-type Rows = 1 | 2 | 3
-const LANE_SIZE: Record<Rows, { bw: number; kw: number }> = { 3: { bw: 12, kw: 9 }, 2: { bw: 9, kw: 3 }, 1: { bw: 9, kw: 3 } }
-const LANE_L = 5 // 放不下时左端留给暗色的 "+N"
-const LANE_ROAM = 6 // 小螃蟹再多也给整队留几格走动的地方
-const SAY_MS = 5000 // 气泡显示多久
-const WAVE_MS = 1500 // 子代理结束后挥手多久
-const TYPE_MS = 1500 // 最后一次按键后多久恢复
-const JUMP_FRAMES = 4 // 发出消息那一跳: 蹲 / 腾空 / 腾空 / 落地
-const MOOD_STEP: Record<Mood, number> = { chill: 5, normal: 3, sweat: 2, panic: 1 } // 忙的时候每几帧走一格
-const STROLL_STEP = 3 // 溜达时每几帧走一格
-const STROLL_GAP = [133, 267] // 全闲时每隔多少帧溜达一次 (20-40 秒)
-const LOOK_FRAMES = 24 // 溜达完东张西望多久 (3.6 秒)
-const PT_MAX = 16 // 同时最多几个粒子
-const DUST = 0x8a7f72 // 尘土: 暖灰
-const PT_DARK = 0x27272a // 粒子变暗的方向
-const TIPS = ['/hud top 把面板放到输入框上方', '/hud bottom 把面板放回输入框下方', '/hud agents 打开子代理看板', '/hud crab 关掉或打开散步的螃蟹', '/hud 切换 完整 / 精简 / 隐藏']
-
-// state: walk = 在队里; wave = 子代理结束, 原地挥手; hop = 3 行版挥完往上跳出横栏 (还占着队里的位置, 后面的不会滑到它身下);
-//        exit = 2 行版挥完走上面那行出去 (在 gone 里, 画在最底下)
-type LaneKid = { id: string; x: number; y: number; state: 'walk' | 'wave' | 'hop' | 'exit'; until: number; dir: 1 | -1 }
-// 粒子: 盲文点坐标 (每格 2 x 4 个点), 速度每轴 -1/0/1 (有两个轴时奇偶帧轮流动, 每帧只挪 1 个点位)
-type Particle = { x: number; y: number; vx: -1 | 0 | 1; vy: -1 | 0 | 1; age: number; life: number; color: number }
-type LanePose = 'celebrate' | 'jump' | 'type' | 'walk' | 'sleep' | 'idle'
-type Lane = {
-  w: number // 宽度 (格)
-  rows: Rows
-  bw: number // 大螃蟹占几格
-  kw: number // 小螃蟹占几格
-  bx: number // 大螃蟹最左一格
-  dir: 1 | -1
-  stepAt: number // 大螃蟹上次挪动的帧
-  steps: number // 走了多少步 (尘土每隔几步扬一次)
-  kids: LaneKid[] // 队里的小螃蟹, 从右 (挨着大螃蟹) 到左
-  gone: LaneKid[] // 2 行版正在离场的
-  hidden: number // 放不下的子代理个数 (+N)
-  pt: Particle[]
-  strollLeft: number // 这次溜达还剩几格
-  strollAt: number // 下次溜达的帧 (-1 = 还没排)
-  lookUntil: number // 溜达完东张西望到哪一帧
-  celebAt: number // 这次庆祝从哪一帧开始 (-1 = 不在庆祝)
-  pose: LanePose
-}
-// 这一帧的处境: 散步道的时钟和渲染用同一份
-type LaneAct = { working: boolean; agents: number; typing: boolean; celebrating: boolean; sleeping: boolean; jumpAge: number; md: Mood }
-function newLane(w: number, rows: Rows = 3): Lane {
-  const { bw, kw } = LANE_SIZE[rows]
-  const bx = Math.max(0, Math.floor((w - bw) / 2))
-  return { w, rows, bw, kw, bx, dir: 1, stepAt: 0, steps: 0, kids: [], gone: [], hidden: 0, pt: [], strollLeft: 0, strollAt: -1, lookUntil: -1, celebAt: -1, pose: 'idle' }
-}
-let lane: Lane = newLane(80)
-let crabOn = true // /hud crab 开关 (存进 store)
-let laneDirty = false // 散步道有变化, 下一帧要重画
-let typingUntil = 0 // 最后一次按键 + TYPE_MS
-let jumpFrame = -999 // 发出消息时的帧
-let lastBusyAt = 0 // 最后一次 "有动静" (主会话 / 子代理 / 打字 / 发消息; 溜达不算)
-type Say = { text: string; color: string; until: number }
-let say: Say | undefined // 同一时刻只有一条气泡, 新的顶掉旧的
-const wasRunOut: Record<string, boolean> = {}
-const saidRunOut = new Set<string>() // 每个额度窗口只说一次 "慢点"
-let saidCtxFull = false
-
-const laneCap = (L: Lane) => Math.max(0, Math.floor((L.w - LANE_L - L.bw - LANE_ROAM) / (L.kw + 1)))
-const sgn = (n: number): -1 | 0 | 1 => (n > 0 ? 1 : n < 0 ? -1 : 0)
-// 帧号做种子的伪随机 (测试里可复现)
-const rnd = (f: number, salt: number) => (Math.imul(f + 1, 2654435761) ^ Math.imul(salt + 7, 40503)) >>> 0
-
-function sayNow(text: string, now: number, color = VALUE) {
-  say = { text: '「' + text + '」', color, until: now + SAY_MS }
-  laneDirty = true
-}
-
-// 宽度或行数变了: 宽度变 -> 整队平移回横栏里; 行数变 -> 螃蟹换尺寸, 小螃蟹按新尺寸重新排在大螃蟹后面
-function laneFit(L: Lane, w: number, rows: Rows) {
-  if (rows !== L.rows) {
-    const { bw, kw } = LANE_SIZE[rows]
-    L.rows = rows
-    L.bw = bw
-    L.kw = kw
-    L.gone = []
-    L.pt = []
-    L.kids = L.kids.filter(k => k.state !== 'hop')
-    L.kids.forEach((k, i) => (k.x = L.bx - (kw + 1) * (i + 1)))
-  }
-  if (w !== L.w || L.bx + L.bw > w) {
-    L.w = w
-    const shift = Math.min(0, w - L.bw - L.bx)
-    if (shift) {
-      L.bx += shift
-      for (const k of L.kids) k.x += shift
-    }
-    if (L.bx < 0) L.bx = 0
-  }
-  L.kids = L.kids.slice(0, laneCap(L))
-}
-
-// 进队 / 出队 (不走动): 子代理结束 -> 原地挥手 WAVE_MS -> 3 行版往上跳出去, 2 行版走上面那行出去; 新的排到队尾
-function laneSync(L: Lane, now: number, running: string[]): boolean {
-  let changed = false
-  const run = new Set(running)
-  for (const k of L.kids) {
-    if (k.state === 'walk' && !run.has(k.id)) {
-      k.state = 'wave'
-      k.until = now + WAVE_MS
-      changed = true
-    } else if (k.state === 'wave' && run.has(k.id)) {
-      k.state = 'walk'
-      changed = true
-    } else if (k.state === 'wave' && now >= k.until) {
-      changed = true
-      if (L.rows === 3) {
-        k.state = 'hop'
-        k.y = 2
-      } else {
-        k.state = 'exit'
-        k.dir = k.x + L.kw / 2 < L.w / 2 ? -1 : 1
-        L.gone.push(k)
-      }
-    }
-  }
-  L.kids = L.kids.filter(k => k.state !== 'exit')
-  const cap = laneCap(L)
-  const slot = L.kw + 1
-  for (const id of running) {
-    if (L.kids.some(k => k.id === id)) continue
-    if (L.kids.length >= cap) break
-    const i = L.kids.length
-    const right = i ? L.kids[i - 1].x : L.bx // 右边邻居; 新来的放在队尾, 不和它挨着
-    L.kids.push({ id, x: Math.min(L.bx - slot * (i + 1), right - slot), y: 0, state: 'walk', until: 0, dir: 1 })
-    changed = true
-  }
-  const shown = L.kids.filter(k => k.state === 'walk').length
-  const hidden = Math.max(0, running.length - shown)
-  if (hidden !== L.hidden) {
-    L.hidden = hidden
-    changed = true
-  }
-  return changed
-}
-
-// 这一帧大螃蟹是什么姿势: 庆祝 > 跳 > 打字低头 > 走 (忙 / 溜达) > 睡 > 趴着
-function lanePose(L: Lane, a: LaneAct): LanePose {
-  if (a.celebrating) return 'celebrate'
-  if (a.jumpAge >= 0 && a.jumpAge < JUMP_FRAMES) return 'jump'
-  if (a.typing) return 'type'
-  if (a.working || a.agents > 0 || L.strollLeft > 0) return 'walk'
-  if (a.sleeping) return 'sleep'
-  return 'idle'
-}
-
-function addPt(L: Lane, x: number, y: number, vx: -1 | 0 | 1, vy: -1 | 0 | 1, life: number, color: number) {
-  if (L.pt.length >= PT_MAX) return
-  if (x < 0 || y < 0 || x >= L.w * 2 || y >= L.rows * 4) return
-  L.pt.push({ x, y, vx, vy, age: 0, life: Math.max(2, Math.min(5, life)), color })
-}
-
-// 粒子: 先让活着的走一步 (到寿命就消失), 再按这一帧发生的事冒新的
-function laneParticles(L: Lane, f: number, a: LaneAct, pose: LanePose, stepped: boolean, exits: LaneKid[]) {
-  for (const p of L.pt) {
-    p.age += 1
-    // 两个轴都有速度时奇偶帧轮流动: 每帧只挪 1 个点位
-    if (p.vx && p.vy) {
-      if (p.age % 2) p.x += p.vx
-      else p.y += p.vy
-    } else {
-      p.x += p.vx
-      p.y += p.vy
-    }
-  }
-  L.pt = L.pt.filter(p => p.age < p.life && p.x >= 0 && p.y >= 0 && p.x < L.w * 2 && p.y < L.rows * 4)
-  const H = L.rows * 4 // 点的行数
-  const back = L.dir > 0 ? (L.bx - 1) * 2 + 1 : (L.bx + L.bw) * 2 // 脚后那一格 (和队里的小螃蟹之间的空隙)
-  const fast = a.md === 'sweat' || a.md === 'panic'
-  const busy = a.working || a.agents > 0
-  // 走路: 脚后每隔几步扬起尘土, 往后上方飘; 小跑时多一点, 偶尔甩出一滴汗
-  if (stepped) {
-    const every = fast && busy ? 1 : a.md === 'chill' || !busy ? 3 : 2
-    if (L.steps % every === 0) {
-      addPt(L, back, H - 1, L.dir > 0 ? -1 : 1, -1, 3 + (rnd(f, 1) % 3), DUST)
-      if (fast && busy && rnd(f, 2) % 2) addPt(L, back - L.dir, H - 2, L.dir > 0 ? -1 : 1, -1, 3 + (rnd(f, 3) % 2), DUST)
-    }
-    if (fast && busy && rnd(f, 4) % 12 === 0) addPt(L, back, 2, L.dir > 0 ? -1 : 1, 1, 4, mix(COL.sweat, PT_DARK, 0.25))
-  }
-  // 一轮结束庆祝: 螃蟹两边冒一小圈金色闪光, 往上飘着消失 (开始时一圈, 4 帧后再补一圈小的)
-  if (pose === 'celebrate') {
-    if (L.celebAt < 0) L.celebAt = f
-    const age = f - L.celebAt
-    const wave = age === 0 ? 8 : age === 4 ? 6 : 0
-    const left = L.bx * 2 - 1
-    const right = (L.bx + L.bw) * 2
-    for (let i = 0; i < wave; i++) {
-      const onRight = i % 2 === 1
-      const x = onRight ? right + (i >> 1) % 3 : left - ((i >> 1) % 3)
-      const y = H - 2 - ((i * 3 + age) % Math.max(1, H - 2))
-      addPt(L, x, y, (i >> 1) % 2 ? (onRight ? 1 : -1) : 0, -1, 4 + (rnd(f, 10 + i) % 2), mix(COL.spark, PT_DARK, 0.25))
-    }
-  } else L.celebAt = -1
-  // 发出消息那一跳落地: 两只脚边冒几粒
-  if (pose === 'jump' && a.jumpAge === JUMP_FRAMES - 1) {
-    for (const [x, vx] of [
-      [(L.bx - 1) * 2 + 1, -1],
-      [(L.bx + L.bw) * 2, 1],
-    ] as Array<[number, -1 | 1]>) {
-      addPt(L, x, H - 1, vx, -1, 3, DUST)
-      addPt(L, x, H - 2, vx, 0, 3, DUST)
-    }
-  }
-  // 睡着: 头边慢慢冒泡泡 (每 12 帧一个)
-  if (pose === 'sleep' && f % 12 === 0) {
-    const x = L.bx + L.bw < L.w ? (L.bx + L.bw) * 2 : (L.bx - 1) * 2 + 1
-    addPt(L, x, Math.min(H - 1, 5), 0, -1, 5, mix(COL.bubble, PT_DARK, 0.3))
-  }
-  // 小螃蟹离场: 出口处冒一小团
-  for (const k of exits) {
-    const cx = L.rows === 3 ? (k.x + 4) * 2 : k.dir < 0 ? 1 : L.w * 2 - 2
-    const cy = L.rows === 3 ? 0 : 1
-    addPt(L, cx, cy, -1, 0, 3, DUST)
-    addPt(L, cx + 1, cy, 1, 0, 3, DUST)
-    addPt(L, cx, cy + 1, 0, 1, 3, DUST)
-  }
-}
-
-// 走一帧 (只是算位置和粒子, 不碰 $); 返回这一帧画面有没有变化
-function laneStep(L: Lane, f: number, now: number, a: LaneAct, running: string[]): boolean {
-  let changed = laneSync(L, now, running)
-  if (L.kids.some(k => k.state === 'wave')) changed = true // 挥手的钳子在动
-  // 3 行版往上跳出去的: 每帧升 1 像素, 整只出了顶边才让出队里的位置
-  const exits: LaneKid[] = []
-  for (const k of L.kids) {
-    if (k.state !== 'hop') continue
-    k.y -= 1
-    changed = true
-    if (k.y + 4 <= 0) exits.push(k)
-  }
-  L.kids = L.kids.filter(k => !exits.includes(k))
-  // 2 行版走上面那行出去的
-  for (const k of L.gone) {
-    k.x += k.dir
-    changed = true
-    if (k.x + L.kw <= 0 || k.x >= L.w) exits.push(k)
-  }
-  L.gone = L.gone.filter(k => !exits.includes(k))
-  // 溜达的排程: 只在全闲时 (不忙、不打字、不跳、不庆祝、没睡) 才排; 一忙起来就清掉
-  const busy = a.working || a.agents > 0
-  const calm = !busy && !a.typing && !a.celebrating && !a.sleeping && !(a.jumpAge >= 0 && a.jumpAge < JUMP_FRAMES)
-  if (!calm) {
-    L.strollLeft = 0
-    L.strollAt = -1
-  } else {
-    if (L.strollAt < 0) L.strollAt = f + STROLL_GAP[0] + (rnd(f, 20) % (STROLL_GAP[1] - STROLL_GAP[0]))
-    if (L.strollLeft === 0 && f >= L.strollAt) {
-      L.strollLeft = 3 + (rnd(f, 21) % 6)
-      L.dir = rnd(f, 22) % 2 ? 1 : -1
-      L.strollAt = Number.MAX_SAFE_INTEGER // 走完再排下一次
-    }
-  }
-  const pose = lanePose(L, a)
-  if (pose !== L.pose) {
-    L.pose = pose
-    changed = true
-  }
-  if (pose === 'idle' && f < L.lookUntil) changed = true // 东张西望
-  const m = L.kids.length
-  const lo = L.hidden ? LANE_L : 0
-  const slot = L.kw + 1
-  let dBig: -1 | 0 | 1 = 0
-  if (pose === 'walk') {
-    const room = L.w - lo - L.bw - slot * m > 0
-    if (!room) {
-      // 没地方走: 这次溜达作罢, 过一阵再试 (不然会一直摆着走路的姿势)
-      if (L.strollLeft) L.strollAt = f + STROLL_GAP[0]
-      L.strollLeft = 0
-    }    else if (f - L.stepAt >= (busy ? MOOD_STEP[a.md] : STROLL_STEP)) {
-      if (L.dir > 0 && L.bx + L.bw >= L.w) L.dir = -1
-      else if (L.dir < 0 && L.bx - slot * m <= lo) L.dir = 1
-      dBig = L.dir
-    }
-  }
-  // 一起挪: 往右的从最右一只开始依次挪, 往左的从最左一只开始依次挪, 前面被挡住就这一帧不动
-  // 这样任何时候两只之间至少空 1 格, 不会重叠, 也不会贴住
-  const base = L.bx + dBig - slot // 第 0 只小螃蟹的目标位置, 第 i 只再往左 i 个 slot
-  const xs = [L.bx, ...L.kids.map(k => k.x)]
-  const want = [dBig, ...L.kids.map((k, i) => (k.state === 'hop' ? 0 : sgn(base - slot * i - k.x)))]
-  for (let j = 0; j < xs.length; j++) {
-    if (want[j] !== 1) continue
-    const limit = j === 0 ? L.w - L.bw : xs[j - 1] - slot
-    if (xs[j] + 1 <= limit) xs[j] += 1
-  }
-  for (let j = xs.length - 1; j >= 0; j--) {
-    if (want[j] !== -1) continue
-    const limit = j === xs.length - 1 ? (j === 0 ? 0 : -Infinity) : xs[j + 1] + slot
-    if (xs[j] - 1 >= limit) xs[j] -= 1
-  }
-  const stepped = xs[0] !== L.bx
-  if (stepped) {
-    L.bx = xs[0]
-    L.stepAt = f
-    L.steps += 1
-    changed = true
-    if (!busy && L.strollLeft > 0) {
-      L.strollLeft -= 1
-      if (L.strollLeft === 0) {
-        L.lookUntil = f + LOOK_FRAMES
-        L.strollAt = f + STROLL_GAP[0] + (rnd(f, 23) % (STROLL_GAP[1] - STROLL_GAP[0]))
-      }
-    }
-  }
-  L.kids.forEach((k, i) => {
-    if (xs[i + 1] !== k.x) {
-      k.x = xs[i + 1]
-      changed = true
-    }
-  })
-  laneParticles(L, f, a, pose, stepped, exits)
-  if (L.pt.length) changed = true
-  return changed
-}
-
-// 2 行 / 1 行版大螃蟹的字符画: B = 身体 (钳子、腿同色), 眼睛另外点
-const BIG2 = {
-  walk: ['..BBBBB..', 'B.BBBBB.B', 'BBBBBBBBB'],
-  legs: ['..B.B.B..', '...B.B...'],
-  rest: ['.........', '..BBBBB..', '..BBBBB..', 'BBBBBBBBB'], // 趴着: 身体放低, 腿收起, 钳子平放在地上
-  jump: ['B.BBBBB.B', 'B.BBBBB.B', '..BBBBB..'], // 举钳
-  jumpLegs: ['..B...B..', '.........'], // 落地 / 腾空
-  hi: ['..BBBBB.B', 'B.BBBBB.B', 'BBBBBBB..', '..B.B.B..'], // 打招呼: 右钳举起
-}
-const BIG1 = {
-  walk: ['BBBBBBB'],
-  legs: ['.B.B.B.', '..B.B..'],
-  rest: ['.BBBBB.', 'BBBBBBB'],
-  jump: ['BBBBBBB'],
-  jumpLegs: ['.B...B.', '.......'],
-}
-
-// 3 行版大螃蟹的姿势: 面板那套 drawCrab (12x6), 再按散步道的处境调
-function lanePose3(L: Lane, f: number, a: LaneAct, body: number): { o: Pose; shades: boolean } {
-  const t = Math.floor(f / 2)
-  const o: Pose = { bob: 0, legs: 0, eyes: 'open', look: 0, armL: 'out', armR: 'out', body }
-  let shades = false
-  switch (L.pose) {
-    case 'celebrate':
-      o.armL = 'up'
-      o.armR = 'up'
-      o.bob = t % 2
-      break
-    case 'jump':
-      // 画布只有 6 像素高, 没法整只往上移: 蹲 -> 腾空 (不画腿) -> 落地
-      o.bob = a.jumpAge === 0 || a.jumpAge >= JUMP_FRAMES - 1 ? 1 : 0
-      if (a.jumpAge === 1 || a.jumpAge === 2) o.legs = -1
-      o.armL = o.armR = a.jumpAge === 1 || a.jumpAge === 2 ? 'up' : 'out'
-      break
-    case 'type':
-      // 低头看输入框: 身体放低, 眼睛往下
-      o.bob = 1
-      o.eyeDy = 2
-      break
-    case 'walk':
-      o.legs = t % 4
-      o.bob = t % 2
-      o.look = L.dir
-      if (f % 30 === 0) o.eyes = 'closed'
-      // 钳子偶尔夹一下 (右边和左边错开), 不是一直在动
-      if (f % 16 < 3) o.armR = 'up'
-      else if ((f + 8) % 16 < 3) o.armL = 'up'
-      break
-    case 'sleep':
-      o.eyes = 'closed'
-      o.bob = Math.floor(f / 8) % 2
-      break
-    default:
-      if (f < L.lookUntil) o.look = Math.floor((L.lookUntil - f) / 6) % 2 ? -1 : 1 // 溜达完东张西望
-      if (a.md === 'chill') shades = true
-      else if (f % 30 === 0) o.eyes = 'closed'
-  }
-  return { o, shades }
-}
-
-// 画大螃蟹 (不含粒子); 3 行版用 drawCrab, 另外两版用字符画
-function drawLaneBig(p: Px, L: Lane, f: number, a: LaneAct, pct: number, greet = false, ox = L.bx) {
-  const body = pct >= 80 ? COL.hot : COL.body // 不用 bodyColor: >=95% 时它会闪
-  const bc = { B: body }
-  if (L.rows === 3) {
-    const { o, shades } = greet
-      ? { o: { bob: 0, legs: 0, eyes: 'open', look: 0, armL: 'out', armR: 'up', body } as Pose, shades: false }
-      : lanePose3(L, f, a, body)
-    drawCrab(p, o, ox)
-    if (shades) {
-      rect(p, ox + 3, o.bob + 1, 2, 1, COL.shades)
-      rect(p, ox + 5, o.bob + 1, 2, 1, COL.bridge)
-      rect(p, ox + 7, o.bob + 1, 2, 1, COL.shades)
-    }
-    // 头边 (x=1) 的汗滴 / 慌张的 "!": 和面板同一套 (庆祝和打招呼时不画)
-    if (!greet && L.pose !== 'celebrate') {
-      const t = Math.floor(f / 2)
-      if (a.md === 'panic' && t % 4 >= 2) {
-        put(p, ox + 1, 0, COL.alarm)
-        put(p, ox + 1, 1, COL.alarm)
-      } else if (pct >= 80 || a.md === 'sweat' || a.md === 'panic') {
-        const d = t % 4
-        if (d < 2) put(p, ox + 1, d, COL.sweat)
-      }
-    }
-    return
-  }
-  const pose = greet ? 'hi' : L.pose
-  const shut = (pose === 'sleep' || ((pose === 'idle' || pose === 'type') && f % 30 === 0)) && !greet
-  const eye = shut ? mix(body, COL.eye, 0.45) : COL.eye
-  const look = pose === 'walk' ? L.dir : pose === 'idle' && f < L.lookUntil ? (Math.floor((L.lookUntil - f) / 6) % 2 ? -1 : 1) : 0
-  const legStep = Math.floor(f / (a.md === 'panic' ? 2 : 3)) % 2
-  const hop = Math.floor(f / 3) % 2
-  if (L.rows === 2) {
-    let ey = 1
-    if (pose === 'hi') paint(p, ox, 0, BIG2.hi, bc)
-    else if (pose === 'walk') paint(p, ox, 0, [...BIG2.walk, BIG2.legs[legStep]], bc)
-    else if (pose === 'celebrate') paint(p, ox, 0, [...BIG2.jump, BIG2.jumpLegs[hop]], bc)
-    else if (pose === 'jump') paint(p, ox, 0, [...BIG2.jump, BIG2.jumpLegs[a.jumpAge === 1 || a.jumpAge === 2 ? 1 : 0]], bc)
-    else {
-      paint(p, ox, 0, BIG2.rest, bc) // 趴着 / 睡着 / 打字时低头
-      ey = 2
-    }
-    put(p, ox + 3 + look, ey, eye)
-    put(p, ox + 5 + look, ey, eye)
-  } else {
-    const x = ox + 1
-    if (pose === 'walk' || pose === 'hi') paint(p, x, 0, [...BIG1.walk, BIG1.legs[legStep]], bc)
-    else if (pose === 'celebrate' || pose === 'jump') paint(p, x, 0, [...BIG1.jump, BIG1.jumpLegs[hop]], bc)
-    else paint(p, x, 0, BIG1.rest, bc)
-    put(p, x + 2 + look, 0, eye)
-    put(p, x + 4 + look, 0, eye)
-  }
-}
-
-function lanePx(L: Lane, f: number, a: LaneAct, pct: number): Px {
-  const rows = L.rows
-  const p = canvas(L.w, rows * 2)
-  const kc = { C: COL.kid, L: COL.kidLeg }
-  const kstep = Math.floor(f / 3) % 2
-  // 2 行版离场的小螃蟹画在最底下 (从别的螃蟹背后过); 1 行版没有上面那行, 挥完手直接消失
-  if (rows === 2) for (const k of L.gone) paint(p, k.x, 0, ['CCC', Math.floor(f / 2) % 2 ? '.L.' : 'L.L'], kc)
-  for (const k of L.kids) {
-    if (rows === 3) {
-      // 9x4 的小螃蟹 (BIG2 精灵, 浅一号的颜色, 腿深一号), 眼睛看走的方向; 挥手 = 两只钳子举起放下
-      const y = k.state === 'hop' ? k.y : 2
-      const arms = k.state === 'wave' && kstep ? BIG2.jump : BIG2.walk
-      paint(p, k.x, y, arms, { B: COL.kid })
-      paint(p, k.x, y + 3, [k.state === 'hop' ? BIG2.jumpLegs[1] : BIG2.legs[kstep]], { B: COL.kidLeg })
-      put(p, k.x + 3 + L.dir, y + 1, COL.eye)
-      put(p, k.x + 5 + L.dir, y + 1, COL.eye)
-    } else if (k.state === 'wave') {
-      // 挥手: 2 行版两只钳子轮流举起; 1 行版原地小跳
-      if (rows === 2) paint(p, k.x, 1, [kstep ? 'C..' : '..C', 'CCC', 'L.L'], kc)
-      else paint(p, k.x, 0, ['CCC', kstep ? '...' : 'L.L'], kc)
-    } else paint(p, k.x, rows === 2 ? 2 : 0, ['CCC', kstep ? '.L.' : 'L.L'], kc)
-  }
-  drawLaneBig(p, L, f, a, pct)
-  return p
-}
-
-// 盲文点: (列, 行) -> 位
-const BRAILLE = [
-  [0x01, 0x02, 0x04, 0x40],
-  [0x08, 0x10, 0x20, 0x80],
-]
-// 编码: 有像素的格子照常用半格方块; 上下两半都空的格子才放粒子 (同一格几个点合成一个盲文字符, 颜色取最年轻的)
-function encodeLane(px: Px, cols: number, rows: number, pts: Particle[]): string {
-  const dots = new Map<number, { bits: number; age: number; color: number }>()
-  for (const p of pts) {
-    const cx = p.x >> 1
-    const r = p.y >> 2
-    if (cx >= cols || r >= rows) continue
-    const id = r * cols + cx
-    const d = dots.get(id) ?? { bits: 0, age: Infinity, color: 0 }
-    d.bits |= BRAILLE[p.x & 1][p.y & 3]
-    if (p.age / p.life < d.age) {
-      d.age = p.age / p.life
-      d.color = mix(p.color, PT_DARK, d.age * 0.6) // 只会慢慢变暗
-    }
-    dots.set(id, d)
-  }
-  const words: number[] = []
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const top = px[r * 2]?.[c] ?? -1
-      const bot = px[r * 2 + 1]?.[c] ?? -1
-      const d = dots.get(r * cols + c)
-      if (top < 0 && bot < 0) {
-        if (d && d.bits) words.push(0x2800 + d.bits, d.color, DEF)
-        else words.push(32, DEF, DEF)
-      } else if (bot < 0) words.push(0x2580, top, DEF)
-      else if (top < 0) words.push(0x2584, bot, DEF)
-      else words.push(0x2580, top, bot)
-    }
-  }
-  return new Uint8Array(Uint32Array.from(words).buffer).toBase64()
-}
-
-// 气泡放在大螃蟹旁边: 右边地方大就放右边, 否则放左边; 只放第 0 行 (2/3 行版的小螃蟹在下面); 放不下就截短, 绝不压到螃蟹
-// text: 一句话 (放不下就截短), 或者 "给定宽度, 返回放得下的写法" 的函数 (悬停气泡用)
-function bubbleSpot(L: Lane, text: string | ((room: number) => string)): { x: number; text: string } | undefined {
-  const fit = typeof text === 'string' ? (room: number) => clip(text, room) : text
-  const rightX = L.bx + L.bw + 1
-  const rightRoom = L.w - rightX
-  const leftRoom = L.bx - 1
-  const useRight = rightRoom >= dw(fit(Infinity)) || rightRoom >= leftRoom
-  const room = useRight ? rightRoom : leftRoom
-  if (room < 4) return undefined
-  const t = fit(room)
-  return { x: useRight ? rightX : L.bx - 1 - dw(t), text: t }
-}
-
-// 盖在像素上面的文字: 事件气泡 / +N; 都没有 key
-type LaneText = { row: number; x: number; text: string; color: string }
-function laneTexts(L: Lane, now: number): LaneText[] {
-  const out: LaneText[] = []
-  if (L.hidden) out.push({ row: L.rows - 1, x: 0, text: '+' + L.hidden, color: DIM })
-  if (say && now < say.until) {
-    const s = bubbleSpot(L, say.text)
-    if (s) out.push({ row: 0, x: s.x, text: s.text, color: say.color })
-  }
-  return out
-}
-
-function buildLane(els: any, W: number, now: number, a: LaneAct, pct: number, tip?: (room: number) => string): any {
-  const { Box, Text } = els
-  const L = lane
-  const cols = Math.min(W, 512)
-  const rows = L.rows
-  const px = lanePx(L, frame, a, pct)
-  const over = laneTexts(L, now).map(t => (
-    <Box position="absolute" top={t.row} left={t.x}>
-      <Text color={t.color} wrap="truncate">
-        {t.text}
-      </Text>
-    </Box>
-  ))
-  // 鼠标停在大螃蟹上 (只在全屏模式): 以螃蟹占的格子为悬停区域 (带 key, 跟着螃蟹走), 里面两样平时藏着:
-  //   举钳打招呼的螃蟹 (盖在原螃蟹上) + 旁边的气泡 (用量摘要 + 小贴士); 悬停不跑 hook, 所以打招呼是静止的一张
-  let hover: any = null
-  if (tip) {
-    const hi = canvas(L.bw, rows * 2)
-    drawLaneBig(hi, L, frame, a, pct, true, 0)
-    const spot = bubbleSpot(L, tip)
-    hover = (
-      <Box key="crab-lane-me" position="absolute" top={0} left={L.bx} width={L.bw} height={rows}>
-        <Box position="absolute" top={0} left={0} display="none" hover={{ display: 'flex' }}>
-          <els.Raster key="crab-lane-hi" columns={L.bw} rows={rows} cells={encode(hi, L.bw, rows)} />
-        </Box>
-        {spot ? (
-          <Box position="absolute" top={0} left={spot.x - L.bx} width={dw(spot.text)} display="none" hover={{ display: 'flex' }}>
-            <Text color={VALUE} wrap="truncate">
-              {spot.text}
-            </Text>
-          </Box>
-        ) : null}
-      </Box>
-    )
-  }
-  return (
-    <Box key="crab-lane" width={cols} height={rows} flexShrink={0} flexDirection="row">
-      <els.Raster key="crab-lane-px" columns={cols} rows={rows} cells={encodeLane(px, cols, rows, L.pt)} />
-      {over}
-      {hover}
-    </Box>
-  )
-}
-
-// 悬停气泡的内容 = 用量摘要 + 一条小贴士: 上下文 68% · 5小时 10% 1h54m 重置 · 本周 3% · 小贴士 /hud top ...
-// 放不下时: 先省掉时间; 再把小贴士截短 (至少留得下 "小贴士 /hud" 和一个字); 再放不下才只留摘要 (截短)
-// 返回 "给定宽度 -> 放得下的写法"; 不管哪条小贴士 (按分钟轮换, 长短不一), 同样宽度下都按这个顺序退
-export function laneTip(pct: number | undefined, five: Limit | undefined, week: Limit | undefined, p5: Pace | undefined, pw: Pace | undefined, now: number): (room: number) => string {
-  const one = (name: string, l: Limit | undefined, p: Pace | undefined, withTime: boolean) =>
-    !l
-      ? ''
-      : name + ' ' + Math.round(l.percentUsed) + '%' +
-        (!withTime ? '' : p?.willRunOut && p.runOutIn !== undefined ? ' ' + durShort(p.runOutIn) + '用完' : p?.resetIn !== undefined ? ' ' + durShort(p.resetIn) + ' 重置' : '')
-  const sum = (withTime: boolean) => ['上下文 ' + (pct === undefined ? '--' : Math.round(pct) + '%'), one('5小时', five, p5, withTime), one('本周', week, pw, withTime)].filter(Boolean).join(' · ')
-  const tip = ' · 小贴士 ' + TIPS[Math.floor(now / 60000) % TIPS.length]
-  const full = sum(true) + tip
-  const short = sum(false) + tip
-  const tipMin = dw(sum(false) + ' · 小贴士 /hud ') + 3 // 截短后至少还看得出是哪条命令
-  return room =>
-    dw(full) <= room ? full : dw(short) <= room ? short : room >= tipMin ? clip(short, room) : dw(sum(true)) <= room ? sum(true) : clip(sum(false), room)
-}
-
-// 气泡: 配速从正常变成会用完 (每个窗口只说一次) / 上下文第一次到 COMPACT_AT
-function noteTalk(now: number, pct: number | undefined, pairs: Array<[Limit | undefined, Pace | undefined]>) {
-  for (const [l, p] of pairs) {
-    if (!l || !p) continue
-    const prev = wasRunOut[l.kind]
-    wasRunOut[l.kind] = p.willRunOut
-    const key = l.kind + '|' + (l.resetsAt ?? '')
-    if (p.willRunOut && prev === false && p.runOutIn !== undefined && !saidRunOut.has(key)) {
-      saidRunOut.add(key)
-      sayNow('慢点！' + durShort(p.runOutIn) + '用完', now, WARN)
-    }
-  }
-  if (pct === undefined) return
-  if (pct >= COMPACT_AT && !saidCtxFull) {
-    saidCtxFull = true
-    sayNow('上下文快满了', now)
-  }
-  if (pct < 50) saidCtxFull = false
-}
-
-// 运行中的子代理 (按开始时间); 只认 SubagentStart 或 $.agent.list() 认过的
-const runningKids = () =>
-  [...kids.values()]
-    .filter(k => k.known && k.endedAt === undefined)
-    .sort((a, b) => a.startedAt - b.startedAt)
-    .map(k => k.id)
-
-// 这一刻的处境 (时钟和渲染共用)
-function laneAct(now: number, agents: number): LaneAct {
-  return {
-    working: engineWorking,
-    agents,
-    typing: now < typingUntil,
-    celebrating: now < celebrateUntil,
-    sleeping: lastBusyAt > 0 && now - lastBusyAt > SLEEP_AFTER_MS,
-    jumpAge: frame - jumpFrame,
-    md: mood,
-  }
-}
-
-// 测试用: 用一条全新的散步道跑 N 帧 (不碰会话里那条), 给出每帧的像素、粒子和位置
-type LanePreviewOpts = {
-  w?: number
-  rows?: Rows
-  frames?: number
-  working?: boolean | ((f: number) => boolean)
-  mood?: Mood
-  running?: (f: number) => string[]
-  typing?: (f: number) => boolean
-  jumpAt?: number
-  celebrating?: boolean | ((f: number) => boolean)
-  sleeping?: boolean
-  pct?: number
-}
-export function previewLane(o: LanePreviewOpts = {}) {
-  const rows = o.rows ?? 3
-  const L = newLane(o.w ?? 80, rows)
-  const out: Array<{ px: Px; cells: string; pt: Particle[]; pose: LanePose; bx: number; dir: number; kids: Array<{ id: string; x: number; y: number; state: string }>; gone: Array<{ id: string; x: number }>; hidden: number }> = []
-  const at = (v: boolean | ((f: number) => boolean) | undefined, f: number, d: boolean) => (typeof v === 'function' ? v(f) : (v ?? d))
-  for (let f = 0; f < (o.frames ?? 60); f++) {
-    const running = o.running ? o.running(f) : []
-    const a: LaneAct = {
-      working: at(o.working, f, true),
-      agents: running.length,
-      typing: o.typing ? o.typing(f) : false,
-      celebrating: at(o.celebrating, f, false),
-      sleeping: !!o.sleeping,
-      jumpAge: o.jumpAt === undefined ? -999 : f - o.jumpAt,
-      md: o.mood ?? 'normal',
-    }
-    laneStep(L, f, f * FRAME_MS, a, running)
-    const px = lanePx(L, f, a, o.pct ?? 30)
-    out.push({
-      px,
-      cells: encodeLane(px, L.w, rows, L.pt),
-      pt: L.pt.map(p => ({ ...p })),
-      pose: L.pose,
-      bx: L.bx,
-      dir: L.dir,
-      kids: L.kids.map(k => ({ id: k.id, x: k.x, y: k.y, state: k.state })),
-      gone: L.gone.map(k => ({ id: k.id, x: k.x })),
-      hidden: L.hidden,
-    })
-  }
-  return { frames: out, colors: { body: COL.body, eye: COL.eye, kid: COL.kid, kidLeg: COL.kidLeg, spark: COL.spark }, bw: L.bw, kw: L.kw, cap: laneCap(L), max: PT_MAX }
 }
 
 // ---------------- 小部件 ----------------
@@ -1804,8 +855,7 @@ async function loadPrefs($: any) {
   try {
     const l = await $.store.get('layout')
     if (LAYOUTS.includes(l)) layout = l
-    const p = await $.store.get('position')
-    if (POSITIONS.includes(p)) position = p
+    // v0.16: 终端版面板固定在输入框下方, store 里以前存的 position (测试曾写进过 above) 一律不读
     // 散步道默认开; store 里没有记录也当开 (不沿用上一个会话模块里的值)
     crabOn = (await $.store.get('crab')) !== false
   } catch {}
@@ -1912,7 +962,7 @@ async function checkForUpdate($: any) {
 function needsFrame(now: number): boolean {
   // 只有客户端: 每 15 秒刷新一次时钟, 其余靠事件 (工具开始/结束、一轮结束、用量变化) 触发
   if (!hasTerminal) return frame % 100 === 0
-  // 散步道有东西在动 (小螃蟹走 / 离场, 气泡到时间消失): 这一帧要画
+  // 散步道的 props 变了 (比如冒了新气泡): 推一次 (散步道本身的动画在 Client 里, 不靠这里)
   if (laneDirty) {
     laneDirty = false
     return true
@@ -2115,11 +1165,14 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
     return parts
   }
 
-  // ---------- 精简版: 1 行 (不到 66 列, 或 /hud 切到精简) ----------
-  if (layout === 'compact' || W < 66) {
+  // v0.16: 终端面板不画螃蟹 (螃蟹在输入框上方的散步道里), 网格占满整行; 去掉螃蟹那 15+2 列后各档的分界跟着前移
+  //   (算法不变, 只是可用宽度多了 crabCols 列: 完整版从 96 列降到 79 列, 精简版从不到 66 列降到不到 49 列)
+  const crabCols = isTerm ? 0 : SPRITE_W + 2
+  // ---------- 精简版: 1 行 (终端不到 49 列, 或 /hud 切到精简) ----------
+  if (layout === 'compact' || W - crabCols < 49) {
     const bw = W >= 120 ? 8 : W >= 100 ? 6 : 4
     const crab = isTerm
-      ? [<els.Raster key="crab-mini" columns={MINI_W} rows={1} cells={encode(miniPx(scene), MINI_W, 1)} />]
+      ? []
       : [
           <Text key="crab-k" color={ACCENT}>
             {kaomoji(scene)}
@@ -2136,7 +1189,7 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
       ? m('ctx', '压缩', pct, onCompact, working ? frame % (bw + 6) : -9, 0, { labelW: dw('上下文'), labelKey: 'btn-compact' })
       : m('ctx', '上下文', pct, onContext, working ? frame % (bw + 6) : -9, 0)
     const segs: Seg[] = [
-      { key: 'seg-crab', w: isTerm ? MINI_W : 9, prio: 0, parts: crab },
+      ...(isTerm ? [] : [{ key: 'seg-crab', w: 9, prio: 0, parts: crab }]),
       { ...ctxSeg, prio: 1 },
       { ...m('h5', '5小时', five?.percentUsed, onUsage, -9, pulse(five), limOpts(p5)), prio: 2 },
       { ...m('wk', '本周', week?.percentUsed, onUsage, -9, pulse(week), limOpts(pw)), prio: 3 },
@@ -2171,12 +1224,12 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
     )
   }
 
-  // ---------- 完整版: 螃蟹 + 3 行 x 3 列 (96 列以上) ----------
-  // ---------- 中等版: 螃蟹 + 3 行 x 2 列 (66~95 列, 比如 macOS 默认的 80 列窗口) ----------
+  // ---------- 完整版: 3 行 x 3 列 (终端 79 列以上) ----------
+  // ---------- 中等版: 3 行 x 2 列 (终端 49~78 列, 比如 macOS 默认的 80 列窗口) ----------
   //   左列 模型 / 项目 / 状态, 右列 上下文 / 5小时 / 本周; 本会话、工具、token 放不下, 只在完整版里显示
   // 左右各留 HPAD 格; 各列取整后剩下的零头平分到两边, 让面板两端留空一样
-  const nCols = W >= 96 ? 3 : 2
-  const avail = W - SPRITE_W - 2 - HPAD * 2
+  const nCols = W - crabCols >= 79 ? 3 : 2
+  const avail = W - crabCols - HPAD * 2
   const cw = Math.floor((avail - (nCols - 1) * GAP) / nCols)
   const A = cw * nCols + GAP * (nCols - 1)
   const marginL = HPAD + Math.floor((avail - A) / 2)
@@ -2314,19 +1367,18 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
     </Box>
   )
 
-  const sprite = isTerm ? (
-    <els.Raster key="crab" columns={SPRITE_W} rows={3} cells={encode(scenePx(scene), SPRITE_W, 3)} />
-  ) : (
-    <Text key="crab-k" color={ACCENT}>
-      {kaomoji(scene)}
-    </Text>
+  // 终端: 只有网格; 其他界面照旧左边放颜文字
+  const sprite = isTerm ? null : (
+    <Box key="sprite" width={SPRITE_W} flexShrink={0} height={3}>
+      <Text key="crab-k" color={ACCENT}>
+        {kaomoji(scene)}
+      </Text>
+    </Box>
   )
 
   return (
-    <Box key="hud" flexDirection="row" columnGap={2} paddingLeft={marginL} paddingRight={marginR}>
-      <Box key="sprite" width={SPRITE_W} flexShrink={0} height={3}>
-        {sprite}
-      </Box>
+    <Box key="hud" flexDirection="row" columnGap={isTerm ? 0 : 2} paddingLeft={marginL} paddingRight={marginR}>
+      {sprite}
       <Box key="info" flexDirection="column" width={A} flexShrink={0}>
         {gridRow('r1', rows[0])}
         {gridRow('r2', rows[1])}
@@ -2336,9 +1388,76 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
   )
 }
 
-// 散步道这一次画: 取用量 (心情 / 气泡 / 悬停摘要) 和子代理, 再画; 渲染路径里不跑 git / 进程 / 文件
-// 进队出队在这里也同步一次 (时钟没走时也看得见 N 只), 走动只在时钟里
-async function laneView($: any, els: any, W: number, rows: Rows, working: boolean, fullscreen: boolean) {
+// ---------------- 螃蟹散步道: hooks 这边 (v0.16 起散步道本身在 Client 模块 walkway.tsx 里走) ----------------
+// hooks 只把处境当 props 传进去 (忙不忙、心情、工具、上下文 %、子代理、事件气泡、打字 / 发送 / 庆祝的序号、用量摘要);
+// 位置、小螃蟹、粒子、走路、悬停停下都由模块自己用帧钟推进, hooks 不用为散步道每帧重画
+const TIPS = ['/hud agents 打开子代理看板', '/hud crab 关掉或打开散步的螃蟹', '/hud 切换 完整 / 精简 / 隐藏']
+let crabOn = true // /hud crab 开关 (存进 store)
+let laneDirty = false // 散步道的 props 变了 (比如冒了新气泡), 下一帧推一次
+let typeSeq = 0 // 打字 (prompt.edit) 的序号: 模块见到新序号就低头 1.5 秒
+let typePushedAt = 0 // 上次为打字重画的时间 (连着打字时约 0.4 秒推一次)
+let jumpSeq = 0 // 发出消息 (prompt.submit) 的序号: 模块见到新序号就跳一下
+let celebSeq = 0 // 一轮结束的序号 + 庆祝多少帧
+let celebFrames = 0
+let lastBusyAt = 0 // 最后一次 "有动静" (主会话 / 子代理 / 打字 / 发消息; 溜达不算) -> 模块据此算 5 分钟睡着
+type Say = { seq: number; text: string; color: string }
+let say: Say | undefined // 最近一条事件气泡; 模块按序号显示约 5 秒, 新的顶掉旧的
+let saySeq = 0
+const wasRunOut: Record<string, boolean> = {}
+const saidRunOut = new Set<string>() // 每个额度窗口只说一次 "慢点"
+let saidCtxFull = false
+
+function sayNow(text: string, now: number, color = VALUE) {
+  say = { seq: ++saySeq, text: '「' + text + '」', color }
+  laneDirty = true
+}
+
+// 悬停气泡的内容 = 用量摘要 + 一条小贴士: 上下文 68% · 5小时 10% 1h54m 重置 · 本周 3% · 小贴士 /hud agents ...
+// 给 Client 的是从长到短 4 种写法 + tipMin; 挑法 (tipFit) 和测试共用
+function laneTipParts(pct: number | undefined, five: Limit | undefined, week: Limit | undefined, p5: Pace | undefined, pw: Pace | undefined, now: number): { v: string[]; tipMin: number } {
+  const one = (name: string, l: Limit | undefined, p: Pace | undefined, withTime: boolean) =>
+    !l
+      ? ''
+      : name + ' ' + Math.round(l.percentUsed) + '%' +
+        (!withTime ? '' : p?.willRunOut && p.runOutIn !== undefined ? ' ' + durShort(p.runOutIn) + '用完' : p?.resetIn !== undefined ? ' ' + durShort(p.resetIn) + ' 重置' : '')
+  const sum = (withTime: boolean) => ['上下文 ' + (pct === undefined ? '--' : Math.round(pct) + '%'), one('5小时', five, p5, withTime), one('本周', week, pw, withTime)].filter(Boolean).join(' · ')
+  const tip = ' · 小贴士 ' + TIPS[Math.floor(now / 60000) % TIPS.length]
+  return { v: [sum(true) + tip, sum(false) + tip, sum(true), sum(false)], tipMin: dw(sum(false) + ' · 小贴士 /hud ') + 3 }
+}
+export function laneTip(pct: number | undefined, five: Limit | undefined, week: Limit | undefined, p5: Pace | undefined, pw: Pace | undefined, now: number): (room: number) => string {
+  const t = laneTipParts(pct, five, week, p5, pw, now)
+  return tipFit(t.v, t.tipMin)
+}
+
+// 气泡: 配速从正常变成会用完 (每个窗口只说一次) / 上下文第一次到 COMPACT_AT
+function noteTalk(now: number, pct: number | undefined, pairs: Array<[Limit | undefined, Pace | undefined]>) {
+  for (const [l, p] of pairs) {
+    if (!l || !p) continue
+    const prev = wasRunOut[l.kind]
+    wasRunOut[l.kind] = p.willRunOut
+    const key = l.kind + '|' + (l.resetsAt ?? '')
+    if (p.willRunOut && prev === false && p.runOutIn !== undefined && !saidRunOut.has(key)) {
+      saidRunOut.add(key)
+      sayNow('慢点！' + durShort(p.runOutIn) + '用完', now, WARN)
+    }
+  }
+  if (pct === undefined) return
+  if (pct >= COMPACT_AT && !saidCtxFull) {
+    saidCtxFull = true
+    sayNow('上下文快满了', now)
+  }
+  if (pct < 50) saidCtxFull = false
+}
+
+// 运行中的子代理 (按开始时间); 只认 SubagentStart 或 $.agent.list() 认过的
+const runningKids = () =>
+  [...kids.values()]
+    .filter(k => k.known && k.endedAt === undefined)
+    .sort((a, b) => a.startedAt - b.startedAt)
+    .map(k => k.id)
+
+// 散步道这一次画: 取用量 (心情 / 气泡 / 悬停摘要) 和子代理, 交给 Client; 渲染路径里不跑 git / 进程 / 文件
+async function walkwayView($: any, els: any, W: number, rows: Rows, sky: boolean, working: boolean) {
   const now = await $.clock.now()
   engineWorking = working
   let u: any = {}
@@ -2357,12 +1476,25 @@ async function laneView($: any, els: any, W: number, rows: Rows, working: boolea
     [five, p5],
     [week, pw],
   ])
-  const running = runningKids()
-  laneFit(lane, Math.min(W, 512), rows)
-  laneSync(lane, now, running)
-  const a = laneAct(now, running.length)
-  lane.pose = lanePose(lane, a)
-  return buildLane(els, W, now, a, pct ?? lastPct, fullscreen ? laneTip(pct, five, week, p5, pw, now) : undefined)
+  const w = Math.min(W, 512)
+  const props: WalkProps = {
+    w,
+    rows,
+    sky,
+    working,
+    agents: runningKids(),
+    mood,
+    pct: pct ?? lastPct,
+    tool: currentTool ? toolKind(currentTool) : '',
+    typeSeq,
+    jumpSeq,
+    celebSeq,
+    celebFrames,
+    ...(say ? { say } : {}), // props 里不能有 undefined
+    idleMs: lastBusyAt > 0 ? Math.max(0, now - lastBusyAt) : 0,
+    tip: laneTipParts(pct, five, week, p5, pw, now),
+  }
+  return <els.Client key="walkway" module="./walkway.tsx" props={props} width={w} height={rows + (sky ? 1 : 0)} />
 }
 
 // ---------------- 每轮收据 ----------------
@@ -2567,7 +1699,7 @@ export function previewScene(tool: string, opts: PreviewOpts = {}) {
   for (let f = 0; f < (opts.frames ?? 24); f++) {
     frame = f
     const s = previewOne(tool, opts)
-    out.push(encode(scenePx(s), SPRITE_W, 3), encode(miniPx(s), MINI_W, 1))
+    out.push(encode(scenePx(s, f), SPRITE_W, 3), encode(miniPx(s, f), MINI_W, 1))
   }
   frame = 0
   return { label: toolLabel(tool), kind: toolKind(tool), frames: out }
@@ -2579,8 +1711,8 @@ export function previewPixels(tool: string, opts: PreviewOpts = {}) {
   for (let f = 0; f < (opts.frames ?? 24); f++) {
     frame = f
     const s = previewOne(tool, opts)
-    big.push(scenePx(s))
-    mini.push(miniPx(s))
+    big.push(scenePx(s, f))
+    mini.push(miniPx(s, f))
   }
   frame = 0
   return { big, mini, colors: { body: COL.body, kid: COL.kid, kidEye: COL.kidEye, kidLeg: COL.kidLeg, shades: COL.shades, sweat: COL.sweat, alarm: COL.alarm } }
@@ -2590,9 +1722,6 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await loadPrefs($)
     // 散步道和气泡从头开始
-    lane = newLane(lane.w, lane.rows)
-    typingUntil = 0
-    jumpFrame = -999
     say = undefined
     saidCtxFull = false
     saidRunOut.clear()
@@ -2617,24 +1746,8 @@ export const register: Register = on => {
       if (tick % 40 === 5) void watchLimits($) // 约每 6 秒看一次额度有没有恢复 (面板隐藏时也看)
       if (layout === 'off') return
       frame += 1
-      // 散步道走一帧 (只是算位置, 不碰 $; 动了才标记要重画)
-      if (crabOn && hasTerminal) {
-        const now = await $.clock.now()
-        const running = runningKids()
-        if (engineWorking || running.length) lastBusyAt = now
-        if (laneStep(lane, frame, now, laneAct(now, running.length), running)) laneDirty = true
-        if (say && now >= say.until) {
-          say = undefined
-          laneDirty = true
-        }
-      }
-      if (frame % 20 === 1) {
-        try {
-          hasTerminal = (await $.session.surfaces()).includes('terminal')
-        } catch {
-          hasTerminal = true
-        }
-      }
+      // 散步道在 Client 里自己走; 这里只记 "有动静" 的时间 (模块据此算 5 分钟睡着)
+      if (engineWorking || agentsNow > 0) lastBusyAt = await $.clock.now()
       if (needsFrame(await $.clock.now())) redraw($)
       if (frame % 400 === 7) void checkForUpdate($) // 约每 60 秒
       if (lastDesktopCols && lastDesktopCols !== savedDesktopCols) {
@@ -2647,8 +1760,8 @@ export const register: Register = on => {
     try {
       await $.command.register({
         name: 'hud',
-        description: '用量面板：完整 → 精简 → 隐藏 循环；/hud top 放输入框上方，/hud bottom 放下方，/hud agents 打开子代理看板，/hud crab 开关输入框上方散步的螃蟹',
-        argumentHint: '[top|bottom|agents|crab]',
+        description: '用量面板 (固定在输入框下方)：完整 → 精简 → 隐藏 循环；/hud agents 打开子代理看板，/hud crab 开关输入框上方散步的螃蟹',
+        argumentHint: '[agents|crab]',
         immediate: true,
       })
     } catch (err) {
@@ -2673,12 +1786,9 @@ export const register: Register = on => {
       redraw($)
       return { text: crabOn ? '螃蟹散步道已打开（输入框正上方）' : '螃蟹散步道已关闭（/hud crab 再打开）' }
     }
+    // v0.16: 终端版面板固定在输入框下方, 螃蟹在上方; /hud top|bottom 不再挪面板, 也不写 store
     if (/^(top|above|up|上)/.test(arg) || /^(bottom|below|down|下)/.test(arg)) {
-      position = /^(top|above|up|上)/.test(arg) ? 'above' : 'below'
-      await $.store.set('position', position)
-      if (layout === 'off') layout = 'full'
-      redraw($)
-      return { text: '用量面板放在输入框' + (position === 'above' ? '上方' : '下方') }
+      return { text: '终端版面板固定在输入框下方，螃蟹在上方' }
     }
     layout = LAYOUTS[(LAYOUTS.indexOf(layout) + 1) % LAYOUTS.length]
     await $.store.set('layout', layout)
@@ -2814,7 +1924,7 @@ export const register: Register = on => {
       ran = await next(e)
       return ran
     } finally {
-      if (!e.agentId) currentTool = ''
+      if (!e.agentId) currentTool = '' // (工具刚结束时散步道的螃蟹还会多做 4 帧动作, 在模块里算)
       if (kid) kid.lastAt = await $.clock.now()
       // 改文件只算真的改成了的 (没被拒、没报错)
       if (run && ran && !ran.deny && !ran.isError && toolKind(String(e.tool)) === 'edit') countEdit(run, e)
@@ -2848,6 +1958,8 @@ export const register: Register = on => {
       lastTurnMs = turnStartedAt ? now - turnStartedAt : 0
       lastTurnTools = turnTools
       celebrateUntil = now + (lastTurnMs > 180_000 ? 2600 : 1400)
+      celebSeq += 1
+      celebFrames = Math.round((celebrateUntil - now) / FRAME_MS)
       sayNow('搞定 ' + dur(lastTurnMs), now)
       // 庆祝结束时再画一次, 让只有客户端的会话也能回到平常的样子
       $.clock.after(celebrateUntil - now + 100, () => redraw($))
@@ -2893,22 +2005,21 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // 用户在输入框打字: 螃蟹停下低头看输入框, 最后一次按键后 TYPE_MS 恢复 (只改状态; 刚开始打字时重画一次, 之后靠时钟)
+  // 用户在输入框打字: 螃蟹停下低头看输入框, 最后一次按键后约 1.5 秒恢复 (只改序号; 连着打字时约 0.4 秒推一次 props)
   on('prompt.edit', async ($, e, next) => {
     const now = await $.clock.now()
-    const was = now < typingUntil
-    typingUntil = now + TYPE_MS
+    typeSeq += 1
     lastBusyAt = now
-    laneDirty = true
-    if (!was && crabOn && layout !== 'off') redraw($)
+    if (now - typePushedAt > 400 && crabOn && layout !== 'off') {
+      typePushedAt = now
+      redraw($)
+    }
     return next(e)
   })
   // 用户发出消息: 螃蟹跳一下, 落地冒一小簇尘土
   on('prompt.submit', async ($, e, next) => {
-    typingUntil = 0
-    jumpFrame = frame
+    jumpSeq += 1
     lastBusyAt = await $.clock.now()
-    laneDirty = true
     if (crabOn && layout !== 'off') redraw($)
     return next(e)
   })
@@ -2939,7 +2050,7 @@ export const register: Register = on => {
 
   // 输入框上方的横栏:
   //   客户端 -> 客户端专用的 SVG 面板 (客户端只用这一处)
-  //   终端   -> 螃蟹散步道 (/hud crab 开关); /hud top 时散步道下面接着画面板
+  //   终端   -> 螃蟹散步道 (/hud crab 开关); 面板固定在输入框下方 (PromptHint)
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (layout === 'off' || e.props.hasSurvey) return next(e)
     if (e.surface === 'desktop') {
@@ -2948,35 +2059,20 @@ export const register: Register = on => {
     }
     if (e.surface !== 'terminal') return next(e)
     // bodyColumns 已经扣掉引擎右端放 [-] 的 5 格; maxRows = 这条横栏最多能占几行
+    // v0.16: 终端版这里只画散步道 (面板固定在输入框下方). 按 maxRows 退档:
+    //   >=4: 天空行 + 3 行版; 3: 天空行 + 2 行版; 2: 2 行版 (没有天空行); 1: 1 行版; 0: 不画
     const W = e.props.bodyColumns ?? 100
     const maxRows = e.props.maxRows ?? 0
-    const fullscreen = (e as any).viewport?.isFullscreen === true
-    const working = !!e.props.isWorking
-    // 面板在输入框下方 (默认): 横栏里只有散步道; 放得下 3 行画 3 行版, 不够就退到 2 行 / 1 行, 0 行不画
-    if (position !== 'above') {
-      const rows = crabOn ? Math.min(3, maxRows) : 0
-      if (rows < 1) return next(e)
-      return laneView($, $.ui.resolve(e), W, rows as Rows, working, fullscreen)
-    }
-    // /hud top: 面板优先, 散步道用剩下的行, 放在面板上面 (把回复和面板隔开);
-    // 关掉散步道时照旧在面板上面空一行
-    const els: any = $.ui.resolve(e)
-    const { Box, Text } = els
-    const view = await buildView($, els, e.surface, W, working)
-    const panelRows = layout === 'compact' || W < 66 ? 1 : 3
-    const rows = crabOn ? Math.min(3, maxRows - panelRows) : 0
-    const top = rows >= 1 ? await laneView($, els, W, rows as Rows, working, fullscreen) : !crabOn && maxRows > panelRows ? <Text key="gap"> </Text> : null
-    return (
-      <Box flexDirection="column">
-        {top}
-        {view}
-      </Box>
-    )
+    const total = crabOn ? Math.min(4, maxRows) : 0
+    if (total < 1) return next(e)
+    const sky = total >= 3
+    const rows = (sky ? total - 1 : total) as Rows
+    return walkwayView($, $.ui.resolve(e), W, rows, sky, !!e.props.isWorking)
   })
 
-  // 放在输入框下方: 面板在上, 引擎自己的提示行 (auto mode / esc to interrupt) 保留在下
+  // 终端面板固定在输入框下方: 面板在上, 引擎自己的提示行 (auto mode / esc to interrupt) 保留在下
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || layout === 'off' || position !== 'below') return next(e)
+    if (e.surface !== 'terminal' || layout === 'off') return next(e)
     const theirs = await next(e)
     const els: any = $.ui.resolve(e)
     const { Box } = els

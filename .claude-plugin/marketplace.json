@@ -6,7 +6,7 @@
     {
       "name": "usage-hud",
       "source": "./usage-hud",
-      "description": "Animated usage panel under the prompt: a moody pixel crab, a model/project/usage grid with quota-pace warnings, and a crab walkway above the prompt"
+      "description": "A usage panel under the prompt (model/project/usage grid with quota-pace warnings) and a moody pixel crab walking above it with your subagents"
     },
     {
       "name": "html-shelf",
