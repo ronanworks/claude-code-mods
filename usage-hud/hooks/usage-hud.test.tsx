@@ -1,5 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing'
-import { previewScene, previewPixels, previewLane, paceOf, moodOf, receiptText } from './register'
+import { previewScene, previewPixels, previewLane, laneTip, paceOf, moodOf, receiptText } from './register'
 import { crabSvg, dashSvg } from './desktop'
 
 const USAGE = {
@@ -61,6 +61,8 @@ function mocks(on: any, calls: Calls, sys: Sys = WIN, opts: Opts = {}) {
   on('classic.PermissionRequest', async () => ({}))
   on('classic.Notification', async () => ({}))
   on('session.compact', async () => ({ messages: [{ role: 'user', text: '(summary)', toolUses: [] }] }))
+  on('prompt.edit', async ($: any, e: any) => ({ text: e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end), cursor: e.start + e.inputText.length }))
+  on('prompt.submit', async ($: any, e: any) => ({ text: e.text }))
   on('ui.log', async () => ({ value: undefined }))
   on('session.start', async ($: any, e: any) => ({ cwd: e.cwd }))
   on('session.usage', async () => ({ value: opts.usage ? opts.usage() : USAGE }))
@@ -370,10 +372,10 @@ test('/hud top 改到输入框上方: 上面是螃蟹散步道 (关掉散步道�
   await start($, on)
   await $.command.run({ command: 'hud', args: 'top' } as any)
   const band = await mountBand($, 140)
-  // 0.14: 散步道 (140 宽 x 2 行) 在面板的螃蟹 (15 宽 x 3 行) 上面, 原来那行空行不要了
-  const rasters: any[] = await band.findAll({ type: 'Raster' })
+  // 散步道 (140 宽 x 3 行) 在面板的螃蟹 (15 宽 x 3 行) 上面, 原来那行空行不要了 (悬停里藏着的打招呼螃蟹不算)
+  const rasters: any[] = (await band.findAll({ type: 'Raster' })).filter((r: any) => r.key !== 'crab-lane-hi')
   expect(rasters.map(r => [r.props.columns, r.props.rows])).toEqual([
-    [140, 2],
+    [140, 3],
     [15, 3],
   ])
   await band.unmount()
@@ -728,7 +730,9 @@ test('子代理看板: 点 "+1代理" 或 /hud agents 打开侧边面板; 显示
     expect(all.some(s => s.includes('运行中'))).toBe(true)
     expect(all.some(s => s.includes('可能卡住'))).toBe(false)
     for (const s of all) expect(SAFE2.test(s) ? 'ok' : 'unsafe: ' + s).toBe('ok')
-    expect(await pane.find({ type: 'Button', key: 'btn-agents-close' })).toBeDefined()
+    // 只留引擎自己的 x 和 Esc, 不再画我们自己的 "关闭"
+    expect(await pane.find({ type: 'Button', key: 'btn-agents-close' })).toBeUndefined()
+    expect((await pane.findAll({ type: 'Button' })).length).toBe(0)
     await pane.unmount()
   }
   t += 6 * 60_000 // 6 分钟没有任何工具动作
@@ -1080,12 +1084,13 @@ test('客户端仪表盘: 5小时/本周 的条上有亮色细竖线刻度 (略�
   expect(one(undefined).svg.includes('后重置')).toBe(false)
 })
 
-// ======================== v0.14: 螃蟹散步道 (输入框正上方的横栏) ========================
+// ======================== v0.14 / v0.15: 螃蟹散步道 (输入框正上方的横栏) ========================
 
 // 散步道里还会出现气泡的「」和 ！
 const SAFE3 = /^[\x20-\x7E一-鿿，│█▏▎▍▌▋▊▉─━╸▁▂▃▄▅▆▇✓·「」！]*$/
 const KID_C = 0xf2a07b
-const KID_L = 0xa4553d
+const BODY = 0xd97757
+const EYE = 0x1c1917
 
 async function mountAbove($: any, cols: number, maxRows: number, o: { working?: boolean; fullscreen?: boolean; survey?: boolean } = {}) {
   return $.ui.mount({
@@ -1094,25 +1099,29 @@ async function mountAbove($: any, cols: number, maxRows: number, o: { working?: 
     component: 'AbovePrompt',
     requestId: 'band',
     viewport: { columns: cols + 5, rows: 40, isFullscreen: o.fullscreen ?? true },
-    props: { hasSurvey: !!o.survey, isWorking: !!o.working, maxRows, bodyColumns: cols, scroll: { top: 0, bodyRows: maxRows, totalRows: 2 }, view: {} },
+    props: { hasSurvey: !!o.survey, isWorking: !!o.working, maxRows, bodyColumns: cols, scroll: { top: 0, bodyRows: maxRows, totalRows: 3 }, view: {} },
   } as any)
 }
-// 散步道的根 Box 和它的子元素: Raster + 叠在上面的文字 (气泡 / z / +N) + 悬停行
+// 散步道的根 Box 和它的子元素: 主 Raster + 叠在上面的文字 (事件气泡 / +N) + 跟着大螃蟹的悬停区域
 async function laneOf(ui: any) {
   const root: any = (await ui.findAll({ type: 'Box' })).find((b: any) => b.key === 'crab-lane')
   const kids: any[] = root?.children ?? []
   const raster = kids.find(c => c?.type === 'Raster')
-  const overs = kids.filter(c => c?.type === 'Box').map(b => ({
+  const box = (b: any) => ({
     left: b.props?.left ?? 0,
     top: b.props?.top ?? 0,
+    width: b.props?.width,
     hidden: b.props?.display === 'none',
     hover: b.hover ?? b.props?.hover,
     text: (b.children ?? []).map((t: any) => textOf(t)).join(''),
     color: (b.children ?? [])[0]?.props?.color,
-  }))
-  return { root, raster, overs, say: overs.find(o => !o.hidden && o.text.startsWith('「')) }
+    children: b.children ?? [],
+  })
+  const overs = kids.filter(c => c?.type === 'Box' && !c.props?.key).map(box)
+  const me = kids.find(c => c?.type === 'Box' && c.props?.key === 'crab-lane-me')
+  return { root, raster, overs, me: me ? { ...box(me), height: me.props?.height, inner: (me.children ?? []).map(box) } : undefined, say: overs.find(o => o.text.startsWith('「')) }
 }
-// Raster 的格子 -> 像素颜色 (每格上下两个像素; -1 = 空)
+// Raster 的格子 -> 像素颜色 (每格上下两个像素; -1 = 空; 盲文粒子当空格)
 function rasterPx(r: any): number[][] {
   const cols = r.props.columns
   const rows = r.props.rows
@@ -1129,158 +1138,328 @@ function rasterPx(r: any): number[][] {
   }
   return px
 }
-const kidBodies = (row: number[]) => row.filter(c => c === KID_C).length / 3
+// 数小螃蟹: 某一行像素里浅橙色的连续段 (两只之间至少空 1 格); 3 行版看第 4 行 (身体最宽那行), 2 行版第 2 行, 1 行版第 0 行
+function kidCount(px: number[][], rows: number): number {
+  const row = px[rows === 3 ? 4 : rows === 2 ? 2 : 0]
+  let n = 0
+  row.forEach((c, x) => {
+    if (c === KID_C && row[x - 1] !== KID_C) n++
+  })
+  return n
+}
+// 大螃蟹占的列 (身体色; 小螃蟹是浅一号的颜色, 不算)
+const crabCols = (px: number[][]) => new Set(px.flatMap(row => row.map((c, x) => (c === BODY ? x : -1)).filter(x => x >= 0)))
+const decode = (b64: string) => new Uint32Array(Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer)
 
-test('散步道: 默认在横栏里画 2 行, 宽度不超过 bodyColumns, 没有 Button; maxRows 2/1/0; 问卷时让位', async ($, on) => {
+test('散步道: maxRows >= 3 画 3 行版, 不够退到 2 / 1 行, 0 行不画; 宽度不超过 bodyColumns; 没有 Button; 问卷时让位', async ($, on) => {
   await start($, on, WIN, { usage: () => ({ ...USAGE, context: { tokens: 100_000, window: 200_000, percent: 50 } }) })
   for (const cols of [40, 100, 200]) {
-    const ui = await mountAbove($, cols, 10)
-    const l = await laneOf(ui)
-    expect(l.root?.props.width <= cols).toBe(true)
-    expect([l.raster?.props.columns, l.raster?.props.rows]).toEqual([cols, 2])
-    for (const o of l.overs) expect(o.left + dwT(o.text) <= cols ? 'ok' : `${cols}: "${o.text}" 超出`).toBe('ok')
-    // 横栏里不放 Button (空输入框里按数字会按到它)
-    expect((await ui.findAll({ type: 'Button' })).length).toBe(0)
-    for (const s of await strings(ui)) expect(SAFE3.test(s) ? 'ok' : 'unsafe: ' + s).toBe('ok')
-    await ui.unmount()
+    for (const [maxRows, rows] of [
+      [10, 3],
+      [3, 3],
+      [2, 2],
+      [1, 1],
+    ]) {
+      const ui = await mountAbove($, cols, maxRows)
+      const l = await laneOf(ui)
+      expect(l.root?.props.width <= cols).toBe(true)
+      expect([l.raster?.props.columns, l.raster?.props.rows]).toEqual([cols, rows])
+      for (const o of l.overs) expect(o.left + dwT(o.text) <= cols ? 'ok' : `${cols}: "${o.text}" 超出`).toBe('ok')
+      // 横栏里不放 Button (空输入框里按数字会按到它)
+      expect((await ui.findAll({ type: 'Button' })).length).toBe(0)
+      for (const s of await strings(ui)) expect(SAFE3.test(s) ? 'ok' : 'unsafe: ' + s).toBe('ok')
+      await ui.unmount()
+    }
   }
-  // 只剩 1 行: 1 行版; 0 行: 不画 (引擎自己的)
-  const one = await mountAbove($, 100, 1)
-  expect((await laneOf(one)).raster?.props.rows).toBe(1)
-  await one.unmount()
   const zero = await mountAbove($, 100, 0)
   expect(await zero.find({ type: 'Raster' })).toBeUndefined()
   expect(await zero.find({ type: 'Text', text: /engine-base/ })).toBeDefined()
   await zero.unmount()
-  // 问卷占着横栏: 让出来
   const survey = await mountAbove($, 100, 10, { survey: true })
   expect(await survey.find({ type: 'Raster' })).toBeUndefined()
   await survey.unmount()
 })
 
-test('散步道: 鼠标停上去冒一行用量摘要 + 小贴士 (只在全屏模式); 不是全屏就不画这一行', async ($, on) => {
-  await start($, on)
-  const full = await mountAbove($, 120, 2, { fullscreen: true })
-  const tips = (await laneOf(full)).overs.filter(o => o.hidden)
-  expect(tips.length).toBe(1)
-  expect(tips[0].hover).toEqual({ display: 'flex' })
-  expect(tips[0].text.includes('上下文 82%') && tips[0].text.includes('5小时') && tips[0].text.includes('小贴士 /hud')).toBe(true)
-  expect(dwT(tips[0].text) <= 120).toBe(true)
-  await full.unmount()
-  const main = await mountAbove($, 120, 2, { fullscreen: false })
+test('散步道悬停: 以大螃蟹的格子为悬停区域, 里面藏着举钳打招呼的螃蟹 + 旁边的气泡 (用量摘要 + 小贴士); 不再有整行提示; 气泡在横栏里且不压螃蟹', async ($, on) => {
+  // 用 mock.clock: 默认的假时钟挡不住定时器, 螃蟹会按真实时间在测试中途走动, 气泡那一侧的宽度就跟着变
+  // 小贴士按分钟轮换 (5 条长短不一), 每一条都试到; 重置时间也按这个时钟算
+  const T0 = 1_900_000_200_000 - (1_900_000_200_000 % 300_000) // 第 0 条小贴士那一分钟的开头
+  let now = T0
+  const usage = () => ({ ...USAGE, context: { tokens: 100_000, window: 200_000, percent: 50 }, rateLimits: [lim('five_hour', 24, now + 2 * H), lim('seven_day', 12, now + 3 * 24 * H)] })
+  const { clock } = await start($, on, WIN, { mockClock: T0 + 1000, agents: () => [], usage })
+  for (let k = 0; k < 5; k++) {
+    await clock.set(T0 + k * 60_000 + 1000)
+    now = clock.now()
+    for (const [cols, rows, bw] of [
+      [120, 3, 12],
+      [40, 3, 12],
+      [120, 2, 9],
+      [60, 1, 9],
+    ]) {
+      const ui = await mountAbove($, cols, rows, { fullscreen: true })
+      const l = await laneOf(ui)
+      const at = `第 ${k} 条小贴士, ${cols} 列 ${rows} 行`
+      // 不再有盖住整个顶行的提示行
+      expect(l.overs.some(o => o.hidden)).toBe(false)
+      const me = l.me!
+      expect([me.width, me.height]).toEqual([bw, rows])
+      // 悬停区域跟着大螃蟹: 正好是螃蟹占的那几格
+      const crab = crabCols(rasterPx(l.raster))
+      expect([...crab].every(x => x >= me.left && x < me.left + bw) ? 'ok' : at + ': 螃蟹不在悬停区域里').toBe('ok')
+      // 打招呼的螃蟹: 平时藏着, 悬停时显示, 和螃蟹一样大, 盖在它上面
+      const hi = me.inner.find(b => b.children[0]?.type === 'Raster')!
+      expect(hi.hidden && hi.hover?.display === 'flex' && hi.left === 0 && hi.top === 0).toBe(true)
+      const hr = hi.children[0]
+      expect([hr.props.columns, hr.props.rows]).toEqual([bw, rows])
+      if (rows === 3) expect(rasterPx(hr)[0][11]).toBe(BODY) // 右钳举起
+      // 气泡: 平时藏着; 在横栏的宽度里; 不压大螃蟹的格子; 内容是用量摘要开头
+      const tip = me.inner.find(b => b.children[0]?.type === 'Text')!
+      expect(tip.hidden && tip.hover?.display === 'flex').toBe(true)
+      const x0 = me.left + tip.left
+      expect(x0 >= 0 && x0 + dwT(tip.text) <= cols ? 'ok' : `${at}: 气泡 ${x0}+${dwT(tip.text)} 出了横栏`).toBe('ok')
+      expect(x0 + dwT(tip.text) <= me.left || x0 >= me.left + bw ? 'ok' : at + ': 气泡压到螃蟹').toBe('ok')
+      expect(tip.text.startsWith('上下文 50%') ? 'ok' : `${at}: "${tip.text}"`).toBe('ok')
+      // 120 列 (气泡那一侧至少 53 格): 不管轮到哪条小贴士、螃蟹走到哪, 都带着小贴士 (放不下就截短, 不整条丢掉)
+      // 更窄时: 那一侧放得下 "摘要 + 小贴士 /hud" 开头就要带着
+      const room = Math.max(cols - (me.left + bw + 1), me.left - 1)
+      const tipMin = dwT('上下文 50% · 5小时 24% · 本周 12% · 小贴士 /hud ') + 3
+      if (cols >= 120 || room >= tipMin) expect(tip.text.includes('小贴士 /hud') ? 'ok' : `${at}: 气泡这边有 ${room} 格, 却没有小贴士 "${tip.text}"`).toBe('ok')
+      await ui.unmount()
+    }
+  }
+  // 不是全屏 (没有鼠标): 没有悬停区域
+  const main = await mountAbove($, 120, 3, { fullscreen: false })
   const l = await laneOf(main)
   expect(l.raster).toBeDefined()
-  expect(l.overs.some(o => o.hidden)).toBe(false)
+  expect(l.me).toBeUndefined()
   await main.unmount()
 })
 
-test('散步道: N 个子代理画 N 只小螃蟹, 互不重叠也不贴住, 和大螃蟹隔开; 每帧最多挪 1 格; 碰到两端掉头', () => {
-  for (const n of [1, 2, 3, 5]) {
-    for (const mood of ['chill', 'normal', 'panic'] as const) {
-      const ids = Array.from({ length: n }, (_, i) => 'k' + i)
-      const r = previewLane({ w: 80, frames: 400, walking: true, mood, running: () => ids })
-      const dirs = new Set<number>()
-      r.frames.forEach((fr, f) => {
-        expect(fr.kids.length).toBe(n)
-        const xs = [fr.bx, ...fr.kids.map(k => k.x)]
-        // 大螃蟹在横栏里; 两只之间至少空 1 格
-        expect(fr.bx >= 0 && fr.bx + r.bw <= 80).toBe(true)
-        for (let i = 1; i < xs.length; i++) expect(xs[i - 1] - xs[i] >= 4 ? 'ok' : `n=${n} f=${f} 挨得太近 ${xs}`).toBe('ok')
-        if (f > 0) {
-          const prev = [r.frames[f - 1].bx, ...r.frames[f - 1].kids.map(k => k.x)]
-          xs.forEach((x, i) => expect(Math.abs(x - prev[i]) <= 1).toBe(true))
-        }
-        dirs.add(fr.dir)
-      })
-      expect(dirs.size).toBe(2) // 走到头掉过头
-      // 进了横栏以后: 像素里正好 n 只小螃蟹的身体
-      const last = r.frames[r.frames.length - 1]
-      if (last.kids.every(k => k.x >= 0)) expect(kidBodies(last.px[2])).toBe(n)
+test('悬停气泡的写法: 每条小贴士、每种宽度都放得下; 先省时间, 再把小贴士截短, 最后才只留摘要', () => {
+  const T0 = 1_900_000_200_000 - (1_900_000_200_000 % 300_000)
+  for (let k = 0; k < 5; k++) {
+    const now = T0 + k * 60_000 + 1000
+    const five = lim('five_hour', 24, now + 2 * H)
+    const week = lim('seven_day', 12, now + 3 * 24 * H)
+    const fit = laneTip(50, five, week, paceOf(five, now), paceOf(week, now), now)
+    const noTime = '上下文 50% · 5小时 24% · 本周 12%'
+    const tipMin = dwT(noTime + ' · 小贴士 /hud ') + 3
+    for (let room = 4; room <= 140; room++) {
+      const t = fit(room)
+      expect(dwT(t) <= room ? 'ok' : `第 ${k} 条, ${room} 格: "${t}" 放不下`).toBe('ok')
+      // "上下文 50%" 占 10 格, 截短时末尾还有 "..": 12 格起开头完整
+      if (room >= 12) expect(t.startsWith('上下文 50%') ? 'ok' : `第 ${k} 条, ${room} 格: "${t}"`).toBe('ok')
+      // 摘要 + "小贴士 /hud" 开头放得下时, 一定带着小贴士 (以前长的小贴士放不下就整条丢掉, 按分钟时有时无)
+      if (room >= tipMin) expect(t.includes('小贴士 /hud') ? 'ok' : `第 ${k} 条, ${room} 格: 没有小贴士 "${t}"`).toBe('ok')
+    }
+    // 全文放得下就给全文 (带时间)
+    expect(fit(140).includes('2h00m 重置') && fit(140).includes('小贴士 /hud')).toBe(true)
+  }
+})
+
+test('散步道: N 个子代理画 N 只小螃蟹 (3 行版 9 格宽、2 行版 3 格宽), 互不重叠也不贴住, 和大螃蟹隔开; 每帧最多挪 1 格; 碰到两端掉头; 放不下记 +N', { timeoutMs: 30_000 }, () => {
+  for (const rows of [3, 2] as const) {
+    for (const n of [1, 3, 5]) {
+      for (const mood of ['chill', 'panic'] as const) {
+        const ids = Array.from({ length: n }, (_, i) => 'k' + i)
+        const r = previewLane({ w: 90, rows, frames: 400, working: true, mood, running: () => ids })
+        const dirs = new Set<number>()
+        r.frames.forEach((fr, f) => {
+          expect(fr.kids.length).toBe(n)
+          const xs = [fr.bx, ...fr.kids.map(k => k.x)]
+          expect(fr.bx >= 0 && fr.bx + r.bw <= 90).toBe(true)
+          for (let i = 1; i < xs.length; i++) expect(xs[i - 1] - xs[i] >= r.kw + 1 ? 'ok' : `rows=${rows} n=${n} f=${f} 挨得太近 ${xs}`).toBe('ok')
+          if (f > 0) {
+            const prev = [r.frames[f - 1].bx, ...r.frames[f - 1].kids.map(k => k.x)]
+            xs.forEach((x, i) => expect(Math.abs(x - prev[i]) <= 1).toBe(true))
+          }
+          dirs.add(fr.dir)
+        })
+        expect(dirs.size).toBe(2)
+        const last = r.frames[r.frames.length - 1]
+        if (last.kids.every(k => k.x >= 0)) expect(kidCount(last.px, rows)).toBe(n)
+      }
     }
   }
-  // 放不下: 画能放下的几只, 其余记进 +N
-  const many = previewLane({ w: 40, frames: 5, running: () => Array.from({ length: 12 }, (_, i) => 'k' + i) })
-  const fr = many.frames[4]
-  expect(fr.kids.length).toBe(many.cap)
-  expect(fr.hidden).toBe(12 - many.cap)
+  const many = previewLane({ w: 60, frames: 5, running: () => Array.from({ length: 12 }, (_, i) => 'k' + i) })
+  expect(many.frames[4].kids.length).toBe(many.cap)
+  expect(many.frames[4].hidden).toBe(12 - many.cap)
 })
 
-test('散步道: 干活时横着走, 速度跟心情 (悠闲慢 / 慌张小跑), 腿每 2-3 帧换一次; 闲着趴着偶尔眨眼; 睡着闭眼; 一轮结束举钳跳', () => {
-  const moves = (mood: any) => {
-    const r = previewLane({ w: 120, frames: 60, walking: true, mood })
+test('大螃蟹一直有动静: 主会话或子代理在跑都走 (速度跟心情); 全闲时隔 20-40 秒溜达 3-8 格再东张西望; 睡着闭眼', () => {
+  const moves = (o: any) => {
+    const r = previewLane({ w: 120, frames: 120, ...o })
     return r.frames.filter((fr, f) => f > 0 && fr.bx !== r.frames[f - 1].bx).length
   }
-  const m = ['chill', 'normal', 'sweat', 'panic'].map(moves)
+  // 只有子代理在跑 (主会话闲着): 大螃蟹照样走
+  expect(moves({ working: false, running: () => ['a'] }) > 20).toBe(true)
+  const m = ['chill', 'normal', 'sweat', 'panic'].map(mood => moves({ working: true, mood }))
   expect(m[0] < m[1] && m[1] < m[2] && m[2] < m[3] ? 'ok' : 'speeds ' + m).toBe('ok')
-  // 腿: 相邻两帧大多数不变
-  const walk = previewLane({ w: 120, frames: 30, walking: true, mood: 'chill' })
-  const legRow = (fr: any) => JSON.stringify(fr.px[3].slice(fr.bx, fr.bx + 9))
-  let same = 0
-  for (let f = 1; f < 30; f++) if (legRow(walk.frames[f]) === legRow(walk.frames[f - 1])) same++
-  expect(same * 2 > 29).toBe(true)
-  const C = walk.colors
-  // 闲着: 不走; 腿收起 (最下面一行是平放的钳子和身体, 9 格连着); 第 30 帧眨眼
-  const rest = previewLane({ w: 60, frames: 40, walking: false })
-  expect(new Set(rest.frames.map(fr => fr.bx)).size).toBe(1)
-  const bx = rest.frames[0].bx
-  expect(rest.frames[1].px[3].slice(bx, bx + 9).every(c => c === C.body)).toBe(true)
-  expect(rest.frames[1].px[2].filter(c => c === C.eye).length).toBe(2)
-  expect(rest.frames[30].px[2].filter(c => c === C.eye).length).toBe(0)
-  // 睡着: 一直闭眼
-  const sleep = previewLane({ w: 60, frames: 20, walking: false, sleeping: true })
-  expect(sleep.frames.every(fr => fr.px.flat().every(c => c !== C.eye))).toBe(true)
-  // 庆祝: 两只钳子举到最上面一行
-  const jump = previewLane({ w: 60, frames: 6, walking: false, celebrating: true })
-  expect(jump.frames.every(fr => fr.px[0][bx] === C.body && fr.px[0][bx + 8] === C.body)).toBe(true)
-  // 1 行版: 只有 2 像素高, 大螃蟹和小螃蟹都在
-  const one = previewLane({ w: 60, rows: 1, frames: 10, running: () => ['a', 'b'] })
-  expect(one.frames[9].px.length).toBe(2)
-  expect(kidBodies(one.frames[9].px[0])).toBe(2)
+  // 全闲: 前 20 秒不动; 之后溜达一次 3-8 格, 走完停下东张西望
+  const idle = previewLane({ w: 80, frames: 420, working: false })
+  const stepAt = idle.frames.map((fr, f) => (f && fr.bx !== idle.frames[f - 1].bx ? f : -1)).filter(f => f >= 0)
+  expect(stepAt[0] >= 133 && stepAt[0] <= 270 ? 'ok' : 'first stroll at ' + stepAt[0]).toBe('ok')
+  const first = stepAt.filter(f => f < stepAt[0] + 30)
+  expect(first.length >= 3 && first.length <= 8).toBe(true)
+  const stop = first[first.length - 1]
+  expect(idle.frames[stop + 2].pose).toBe('idle')
+  // 东张西望: 停下后几帧里眼睛左右换
+  const eyesAt = (fr: any) => JSON.stringify(fr.px.map((row: number[]) => row.map((c, x) => (c === EYE ? x : -1)).filter(x => x >= 0)))
+  expect(new Set(idle.frames.slice(stop + 1, stop + 20).map(eyesAt)).size > 1).toBe(true)
+  // 睡着: 一直闭眼 (没有深色眼睛像素), 不走
+  const sleep = previewLane({ w: 60, frames: 60, working: false, sleeping: true })
+  expect(sleep.frames.every(fr => fr.pose === 'sleep' && fr.px.flat().every(c => c !== EYE))).toBe(true)
+  expect(new Set(sleep.frames.map(fr => fr.bx)).size).toBe(1)
 })
 
-test('散步道: 主会话闲着、后台子代理还在跑时, 大螃蟹趴着不动, 小螃蟹照样走', () => {
-  const r = previewLane({ w: 80, frames: 120, walking: false, running: () => ['a', 'b'] })
-  expect(new Set(r.frames.map(fr => fr.bx)).size).toBe(1)
-  expect(new Set(r.frames.map(fr => fr.kids[0]?.x)).size > 3).toBe(true)
-  for (const fr of r.frames) expect(fr.kids.every(k => k.x + 3 <= fr.bx - 1)).toBe(true)
-})
-
-test('散步道: 子代理结束后那只挥手约 1.5 秒, 然后几秒内离场 (2 行版走上面那行, 不和队里的重叠); 1 行版挥完直接消失', () => {
-  const end = 20
-  const r = previewLane({ w: 80, frames: 120, walking: true, running: f => (f < end ? ['a', 'b', 'c'] : ['a', 'c']) })
-  const state = (f: number) => r.frames[f].kids.find(k => k.id === 'b')?.state ?? (r.frames[f].gone.some(k => k.id === 'b') ? 'exit' : 'none')
-  expect(state(end - 1)).toBe('walk')
-  for (let f = end; f < end + 9; f++) expect(state(f)).toBe('wave')
-  expect(state(end + 11)).toBe('exit')
-  const goneAt = r.frames.findIndex((fr, f) => f > end && state(f) === 'none')
-  expect(goneAt > 0 && (goneAt - end) * 150 <= 10_000 ? 'ok' : 'left after ' + (goneAt - end) * 150 + 'ms').toBe('ok')
-  for (let f = end + 11; f < goneAt; f++) {
-    const fr = r.frames[f]
-    // 离场的那只在上面那行; 下面那行只有队里的两只
-    expect(fr.kids.length).toBe(2)
-    if (fr.kids.every(k => k.x >= 0)) expect(kidBodies(fr.px[2])).toBe(2)
+test('散步道: 打字时停下低头 (眼睛往下), 停手约 1.5 秒恢复; 发出消息跳一下, 落地冒尘土', () => {
+  // 第 10-29 帧在打字
+  const r = previewLane({ w: 80, frames: 50, working: true, typing: f => f >= 10 && f < 30 })
+  for (let f = 11; f < 30; f++) {
+    expect(r.frames[f].pose).toBe('type')
+    expect(r.frames[f].bx).toBe(r.frames[10].bx)
   }
-  // 1 行版: 挥完以后就不画了
-  const one = previewLane({ w: 80, rows: 1, frames: 40, walking: true, running: f => (f < end ? ['a', 'b'] : ['a']) })
-  expect(kidBodies(one.frames[end + 12].px[0])).toBe(1)
+  const eyeRows = (fr: any) => fr.px.map((row: number[], y: number) => (row.includes(EYE) ? y : -1)).filter((y: number) => y >= 0)
+  expect(eyeRows(r.frames[20]).every((y: number) => y >= 3)).toBe(true) // 低头: 眼睛在第 3 行 (平时第 1-2 行)
+  expect(r.frames[35].pose).toBe('walk')
+  expect(r.frames[49].bx !== r.frames[30].bx).toBe(true)
+  // 发出消息: 4 帧的跳 (蹲 / 腾空 / 腾空 / 落地), 腾空时不画腿, 落地那帧冒尘土
+  const j = previewLane({ w: 80, frames: 12, working: false, jumpAt: 3 })
+  expect(j.frames.slice(3, 7).map(fr => fr.pose)).toEqual(['jump', 'jump', 'jump', 'jump'])
+  expect(j.frames[2].pt.length).toBe(0)
+  expect(j.frames[6].pt.length > 0).toBe(true)
+  expect(j.frames[7].pose).toBe('idle')
+  const bottom = (fr: any) => fr.px[5].filter((c: number) => c === BODY).length
+  expect(bottom(j.frames[4])).toBe(0) // 腾空: 最下面一行没有腿
 })
 
-test('散步道接上真的子代理: 3 个运行中画 3 只; 结束的那只几秒内离场 (mock.clock 走时钟)', async ($, on) => {
+test('粒子: 不超过 16 个, 都在横栏里, 只画在空格子里 (盲文字符), 每帧最多挪 1 个点位, 颜色不跳; 走路和庆祝有, 静止没有', { timeoutMs: 30_000 }, () => {
+  const check = (r: any, label: string) => {
+    let any = 0
+    r.frames.forEach((fr: any, f: number) => {
+      expect(fr.pt.length <= r.max).toBe(true)
+      for (const p of fr.pt) expect(p.x >= 0 && p.y >= 0 && p.x < 80 * 2 && p.y < 12).toBe(true)
+      // 盲文只出现在没有螃蟹像素的格子里
+      const w = decode(fr.cells)
+      for (let i = 0; i < w.length / 3; i++) {
+        const ch = w[i * 3]
+        if (ch >= 0x2800 && ch <= 0x28ff) {
+          any++
+          expect(ch > 0x2800).toBe(true)
+          const x = i % 80
+          const row = Math.floor(i / 80)
+          expect(fr.px[row * 2][x] === -1 && fr.px[row * 2 + 1][x] === -1).toBe(true)
+        } else expect([32, 0x2580, 0x2584].includes(ch) ? 'ok' : `${label}: 字符 ${ch.toString(16)}`).toBe('ok')
+      }
+      // 每个粒子都从上一帧同一个粒子走 1 个点位过来 (颜色不变, 只是变暗)
+      if (f > 0)
+        for (const q of fr.pt) {
+          if (q.age === 0) continue
+          const from = r.frames[f - 1].pt.find((p: any) => p.age === q.age - 1 && p.color === q.color && Math.abs(p.x - q.x) + Math.abs(p.y - q.y) <= 1)
+          expect(from ? 'ok' : `${label} f=${f}: 粒子跳了`).toBe('ok')
+        }
+    })
+    return any
+  }
+  expect(check(previewLane({ w: 80, frames: 200, working: true }), 'walk') > 0).toBe(true)
+  expect(check(previewLane({ w: 80, frames: 200, working: true, mood: 'panic', running: () => ['a', 'b'] }), 'trot') > 0).toBe(true)
+  const cel = previewLane({ w: 80, frames: 20, working: false, celebrating: f => f >= 2 && f < 12 })
+  expect(check(cel, 'celebrate') > 0).toBe(true)
+  expect(cel.frames[3].pt.some((p: any) => p.color === mix(cel.colors.spark))).toBe(true)
+  // 静止 (闲着趴着, 还没到溜达的时候): 一个粒子都没有
+  const rest = previewLane({ w: 80, frames: 120, working: false })
+  expect(rest.frames.every(fr => fr.pt.length === 0)).toBe(true)
+  // 子代理离场: 跳出顶边的地方冒一小团
+  const leave = previewLane({ w: 80, frames: 60, working: false, running: f => (f < 5 ? ['a', 'b'] : ['a']) })
+  const gone = leave.frames.findIndex((fr, f) => f > 5 && fr.kids.length === 1)
+  expect(gone > 0 && leave.frames[gone].pt.some((p: any) => p.y <= 1)).toBe(true)
+})
+// 金色闪光的基础色 (和代码里一样: 金色往深灰混 25%)
+function mix(c: number): number {
+  const d = 0x27272a
+  const ch = (s: number) => Math.round(((c >> s) & 255) * 0.75 + ((d >> s) & 255) * 0.25)
+  return (ch(16) << 16) | (ch(8) << 8) | ch(0)
+}
+
+test('散步道: 子代理结束后那只挥手约 1.5 秒, 然后离场 (3 行版往上跳出顶边, 2 行版走上面那行; 不和队里的重叠); 1 行版挥完直接消失', () => {
+  const end = 20
+  const r3 = previewLane({ w: 90, frames: 60, working: true, running: f => (f < end ? ['a', 'b', 'c'] : ['a', 'c']) })
+  const st = (r: any, f: number) => r.frames[f].kids.find((k: any) => k.id === 'b')?.state ?? (r.frames[f].gone.some((k: any) => k.id === 'b') ? 'exit' : 'none')
+  expect(st(r3, end - 1)).toBe('walk')
+  for (let f = end; f < end + 9; f++) expect(st(r3, f)).toBe('wave')
+  expect(st(r3, end + 11)).toBe('hop')
+  const out3 = r3.frames.findIndex((fr, f) => f > end && st(r3, f) === 'none')
+  expect(out3 > 0 && (out3 - end) * 150 <= 3000).toBe(true)
+  // 跳的时候还占着队里的位置: 后面那只不会滑到它身下
+  for (let f = end; f < out3; f++) {
+    const xs = [r3.frames[f].bx, ...r3.frames[f].kids.map(k => k.x)]
+    for (let i = 1; i < xs.length; i++) expect(xs[i - 1] - xs[i] >= 10).toBe(true)
+  }
+  const r2 = previewLane({ w: 80, rows: 2, frames: 120, working: true, running: f => (f < end ? ['a', 'b', 'c'] : ['a', 'c']) })
+  expect(st(r2, end + 11)).toBe('exit')
+  const out2 = r2.frames.findIndex((fr, f) => f > end && st(r2, f) === 'none')
+  expect(out2 > 0 && (out2 - end) * 150 <= 10_000).toBe(true)
+  const one = previewLane({ w: 80, rows: 1, frames: 40, working: true, running: f => (f < end ? ['a', 'b'] : ['a']) })
+  expect(kidCount(one.frames[end + 12].px, 1)).toBe(1)
+})
+
+test('散步道接上真的子代理: 3 个运行中画 3 只; 只有子代理在跑时大螃蟹也在走; 结束的那只几秒内离场 (mock.clock)', async ($, on) => {
   const T = 1_900_000_000_000
   let list: any[] = ['a', 'b', 'c'].map(id => ({ id, description: id, type: 'Explore', status: 'running' }))
   const { clock } = await start($, on, WIN, { mockClock: T, agents: () => list, usage: () => ({ ...USAGE, context: { tokens: 100_000, window: 200_000, percent: 50 } }) })
-  await clock.advance(3000) // 让队伍走进横栏
-  const count = async () => {
-    const ui = await mountAbove($, 100, 2)
-    const n = kidBodies(rasterPx((await laneOf(ui)).raster)[2])
+  const look = async () => {
+    const ui = await mountAbove($, 110, 3)
+    const l = await laneOf(ui)
     await ui.unmount()
-    return n
+    return { n: kidCount(rasterPx(l.raster), 3), x: l.me?.left }
   }
-  expect(await count()).toBe(3)
-  list = list.map(a => (a.id === 'b' ? { ...a, status: 'completed' } : a))
-  await count() // 画一次: 认出 b 结束了, 开始挥手
-  await clock.advance(10_000)
-  expect(await count()).toBe(2)
+  await look()
+  await clock.advance(4000) // 让队伍走进横栏
+  const a = await look()
+  expect(a.n).toBe(3)
+  await clock.advance(1500)
+  expect((await look()).x !== a.x).toBe(true) // 主会话没在跑, 大螃蟹照样在走
+  list = list.map(k => (k.id === 'b' ? { ...k, status: 'completed' } : k))
+  await look()
+  await clock.advance(5000)
+  expect((await look()).n).toBe(2)
+})
+
+test('5 分钟没有任何动静才睡; 子代理在跑不算闲; 打字时停下, 约 1.5 秒后接着走 (mock.clock)', { timeoutMs: 30_000 }, async ($, on) => {
+  const T = 1_900_000_000_000
+  let list: any[] = []
+  const { clock } = await start($, on, WIN, { mockClock: T, agents: () => list, usage: () => ({ ...USAGE, context: { tokens: 100_000, window: 200_000, percent: 50 } }) })
+  const peek = async () => {
+    const ui = await mountAbove($, 110, 3)
+    const l = await laneOf(ui)
+    await ui.unmount()
+    return { open: rasterPx(l.raster).flat().includes(EYE), x: l.me?.left }
+  }
+  await clock.advance(4 * 60_000)
+  expect((await peek()).open).toBe(true)
+  await clock.advance(61_500)
+  expect((await peek()).open).toBe(false) // 5 分钟没动静: 睡着 (闭眼)
+  const typed = (text: string) => $.prompt.edit({ origin: { kind: 'composer' }, text, cursor: text.length, start: text.length, end: text.length, inputText: 'x' } as any)
+  await typed('')
+  expect((await peek()).open).toBe(true) // 打字把它叫醒 (低头看输入框)
+  // 子代理在跑: 大螃蟹走; 打字的那 1.5 秒里停下, 之后接着走
+  list = [{ id: 'k', description: 'k', type: 'Explore', status: 'running' }]
+  await peek()
+  await clock.advance(1500)
+  const x1 = (await peek()).x
+  await clock.advance(900)
+  expect((await peek()).x !== x1).toBe(true)
+  await typed('x')
+  const t0 = (await peek()).x
+  await clock.advance(1200)
+  expect((await peek()).x).toBe(t0)
+  await clock.advance(1500)
+  expect((await peek()).x !== t0).toBe(true)
+  // 子代理一直在跑: 6 分钟后也没睡, 还在走
+  await clock.advance(6 * 60_000)
+  const x2 = (await peek()).x
+  await clock.advance(900)
+  expect((await peek()).x !== x2).toBe(true)
 })
 
 test('气泡: 一轮结束「搞定 12s」约 5 秒后消失 (mock.clock); 新的顶掉旧的 (压缩完了 / 额度刷新了)', async ($, on) => {
@@ -1300,8 +1479,12 @@ test('气泡: 一轮结束「搞定 12s」约 5 秒后消失 (mock.clock); 新�
   await $.turn.complete({ answer: '', durationMs: 12_000, isAborted: false, turnId: 't1', reason: 'answer' } as any)
   const b = await bubble()
   expect(b?.text).toBe('「搞定 12s」')
-  // 气泡跟着大螃蟹, 在它旁边, 不出横栏
+  // 气泡跟着大螃蟹, 在它旁边, 不出横栏, 不压螃蟹
   expect(b && b.left + dwT(b.text) <= 120).toBe(true)
+  const shot = await mountAbove($, 120, 2)
+  const crab = crabCols(rasterPx((await laneOf(shot)).raster))
+  await shot.unmount()
+  expect([...crab].some(x => b && x >= b.left && x < b.left + dwT(b.text))).toBe(false)
   await clock.advance(4000)
   expect((await bubble())?.text).toBe('「搞定 12s」')
   await clock.advance(1500)
@@ -1368,22 +1551,54 @@ test('/hud crab 关掉后横栏里不画散步道 (存进 store, 重开会话也
   await on2.unmount()
 })
 
-test('/hud top: 散步道在面板上面, 用面板剩下的行; 总高度不超过 maxRows', async ($, on) => {
+test('/hud top: 散步道在面板上面, 用面板剩下的行 (按 3 / 2 / 1 / 0 退档); 总高度不超过 maxRows', async ($, on) => {
   await start($, on)
   await $.command.run({ command: 'hud', args: 'top' } as any)
   for (const [maxRows, laneRows] of [
-    [10, 2],
+    [10, 3],
+    [6, 3],
     [5, 2],
     [4, 1],
     [3, 0],
   ]) {
     const ui = await mountAbove($, 140, maxRows)
-    const rasters: any[] = await ui.findAll({ type: 'Raster' })
+    // 悬停里藏着的打招呼螃蟹不算行
+    const rasters: any[] = (await ui.findAll({ type: 'Raster' })).filter((r: any) => r.key !== 'crab-lane-hi')
     const rows = rasters.map(r => r.props.rows)
-    // 面板 3 行 (完整版的螃蟹 Raster 3 行), 散步道在它前面
     expect(rows).toEqual(laneRows ? [laneRows, 3] : [3])
     expect(rows.reduce((a, b) => a + b, 0) <= maxRows).toBe(true)
     await ui.unmount()
   }
   await $.command.run({ command: 'hud', args: 'bottom' } as any)
+})
+
+test('发出消息 (prompt.submit): 螃蟹蹲一下、腾空 (不画腿)、落地冒尘土, 然后回到趴着 (mock.clock)', async ($, on) => {
+  const T = 1_900_000_000_000
+  const { clock } = await start($, on, WIN, { mockClock: T, agents: () => [], usage: () => ({ ...USAGE, context: { tokens: 100_000, window: 200_000, percent: 50 } }) })
+  const shot = async () => {
+    const ui = await mountAbove($, 110, 3)
+    const l = await laneOf(ui)
+    await ui.unmount()
+    const px = rasterPx(l.raster)
+    const cols = [...crabCols(px)]
+    // 大螃蟹最上 / 最下一行像素: 趴着 0-4, 蹲和落地 1-5 (身体放低一格), 腾空 0-3 (不画腿)
+    const ys = px.map((row, y) => (cols.some(x => row[x] === BODY) ? y : -1)).filter(y => y >= 0)
+    const braille = [...decode(l.raster.props.cells)].filter((c, i) => i % 3 === 0 && c > 0x2800 && c <= 0x28ff).length
+    return { span: [ys[0], ys[ys.length - 1]], braille }
+  }
+  await shot()
+  await clock.advance(450)
+  const before = await shot()
+  expect(before).toEqual({ span: [0, 4], braille: 0 }) // 趴着, 没有粒子
+  const r: any = await $.prompt.submit({ text: 'hi' } as any)
+  expect(r.text).toBe('hi') // 原样往下传
+  expect((await shot()).span).toEqual([1, 5]) // 蹲
+  await clock.advance(150)
+  expect((await shot()).span).toEqual([0, 3]) // 腾空: 不画腿
+  await clock.advance(300)
+  const land = await shot()
+  expect(land.span).toEqual([1, 5]) // 落地
+  expect(land.braille > 0).toBe(true) // 脚边冒尘土
+  await clock.advance(1200)
+  expect(await shot()).toEqual({ span: [0, 4], braille: 0 })
 })

@@ -113,13 +113,15 @@ The crab follows what Claude is doing:
 | Clearly ahead of pace, on track to run out before the reset | Sweats | The percentage and the countdown turn red: `40m用完` (empty in 40m) |
 | Runs out within 30 minutes, or ≥ 95% used | Panics with claws up and a "!" | Same as above |
 
-**The crab walkway above the prompt** (terminal only): a two-row strip right above the input box, home to a second crab.
+**The crab walkway above the prompt** (terminal only): a three-row strip right above the input box, home to a second crab as big as the panel's.
 
-- While Claude works, the crab walks sideways. Its speed follows the mood: it strolls when relaxed and scurries when panicking. When idle it lies down and blinks; after 5 idle minutes it falls asleep.
-- Each running subagent adds a baby crab to the line. When a subagent finishes, its crab waves and walks off.
-- Speech bubbles appear for a few seconds: a finished turn (「搞定 3m12s」, done), a finished compaction, a quota reset, a red pace warning (「慢点！40m用完」, slow down, empty in 40m), and a permission prompt waiting for you (「等你点头」).
-- In fullscreen mode (`/tui fullscreen`), hovering over the walkway shows your current usage and a tip.
-- The engine draws `[-]` at the strip's right end: click it or press ctrl+x ctrl+a to fold the strip away. `/hud crab off` turns it off for good. In a short terminal the strip shrinks to one row or hides.
+- Whenever Claude or any subagent is working, the crab walks sideways, eyes on where it's going. Its speed follows the mood: it strolls when relaxed and scurries when panicking. Fully idle, it strolls a few steps now and then and looks around; after 5 idle minutes it falls asleep.
+- While you type, it stops and looks down at the input box; when you send, it jumps.
+- Small particles keep it lively: dust behind its feet, a drop of sweat when it hurries, gold sparkles when a turn finishes, bubbles while it sleeps.
+- Each running subagent adds a baby crab to the line. When a subagent finishes, its crab waves and leaves.
+- Speech bubbles appear beside the crab for a few seconds: a finished turn (「搞定 3m12s」, done), a finished compaction, a quota reset, a red pace warning (「慢点！40m用完」, slow down, empty in 40m), and a permission prompt waiting for you (「等你点头」).
+- In fullscreen mode (`/tui fullscreen`), point at the crab: it waves, and a bubble beside it shows your usage and a tip. No click needed; a click moves the keyboard focus to the strip, and Esc gives it back.
+- The engine draws `[-]` at the strip's right end: click it or press ctrl+x ctrl+a to fold the strip away. `/hud crab off` turns it off for good. In a short terminal the strip shrinks to two rows, one row, or hides.
 
 **More practical touches**
 
