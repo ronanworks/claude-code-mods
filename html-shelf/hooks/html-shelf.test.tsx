@@ -142,14 +142,14 @@ test('终端里代码块画成卡片，复制的是原文且末尾不带换行',
   const codes: string[] = (await ui.findAll({ type: 'Code' })).map((c: any) => c.text)
   expect(codes).toEqual(['claude --resume "my-session"', 'Get-ChildItem .\\docs\nGet-Content a.txt'])
   const buttons: any[] = await copyButtons(ui)
-  expect(buttons.map(b => b.props.label)).toEqual(['复制', '复制'])
+  expect(buttons.map(b => b.props.label)).toEqual(['Copy', 'Copy'])
 
   await ui.press({ key: 'copy-1' })
   await ui.press({ key: 'copy-2' })
   expect(log.copied).toEqual(['claude --resume "my-session"', 'Get-ChildItem .\\docs\nGet-Content a.txt'])
   // 复制后按钮位置换成"已复制 ✓", 1.8 秒后恢复
   await ui.redraw()
-  expect(await ui.findAll({ type: 'Text', text: '已复制 ✓' })).toHaveLength(2)
+  expect(await ui.findAll({ type: 'Text', text: 'Copied ✓' })).toHaveLength(2)
   expect(await copyButtons(ui)).toHaveLength(0)
   await clock.advance(2_000)
   await ui.redraw()
@@ -449,7 +449,7 @@ test('终端里每条回复右上角有悬停才出现的"复制全文"，复制
   await ui.press({ key: 'copy-all' })
   expect(log.copied).toEqual(['第一行\n  缩进的第二行\n\n第三行'])
   await ui.redraw()
-  expect(await ui.find({ type: 'Text', text: '已复制 ✓' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Copied ✓' })).toBeDefined()
   expect(await ui.find({ key: 'copy-all' } as any)).toBeUndefined()
   await clock.advance(2_000)
   await ui.redraw()
@@ -459,7 +459,7 @@ test('终端里每条回复右上角有悬停才出现的"复制全文"，复制
   // 本 mod 自己画的回复 (第一行就是代码卡片): 按钮往左让开卡片的"填入 复制"
   const c = await mount($, 'terminal', 'm17', '```bash\nnpm test\n```\n\n跑完看结果。')
   const placed: any = (await c.findAll({ type: 'Box' })).find((b: any) => b.props.position === 'absolute')
-  expect(placed.props.right).toBe(17)
+  expect(placed.props.right).toBe(19)
   await c.press({ key: 'copy-all' })
   expect(log.copied[1]).toBe('```bash\nnpm test\n```\n\n跑完看结果。')
   await c.unmount()
@@ -483,7 +483,7 @@ test('Write / Edit 写完的文件，工具行后面有"打开"；没写完、�
   const log = mocks(on)
   const ui = await $.ui.mount({ plugin: 'html-shelf', surface: 'terminal', component: 'ToolUse', requestId: 'tu1', props: TOOL_ROW } as any)
   expect(await ui.find({ type: 'Text', text: 'engine-base' })).toBeDefined()
-  expect((await ui.find({ key: 'open-file' } as any))?.props.label).toBe('打开')
+  expect((await ui.find({ key: 'open-file' } as any))?.props.label).toBe('Open')
   await ui.press({ key: 'open-file' })
   expect(log.opened).toEqual([['cmd.exe', '/d', '/c', 'start', 'html shelf', 'D:\\proj\\docs\\storyboard.pdf']])
   await ui.redraw({ ...TOOL_ROW, isRunning: true, output: undefined } as any)
@@ -496,4 +496,36 @@ test('Write / Edit 写完的文件，工具行后面有"打开"；没写完、�
   const d = await $.ui.mount({ plugin: 'html-shelf', surface: 'desktop', component: 'ToolUse', requestId: 'tu2', props: TOOL_ROW } as any)
   expect(await d.find({ key: 'open-file' } as any)).toBeUndefined()
   await d.unmount()
+})
+
+test('没标语言、但只有一行命令的代码块也有 Insert；命令已带 ! 时不再多加；一行普通文字没有', async ($, on) => {
+  const log = mocks(on)
+  const MSG = [
+    '开机自启被权限检查拦下了，需要你自己执行一次：',
+    '',
+    '```',
+    '! powershell -ExecutionPolicy Bypass -File scripts\label_service\install_autostart.ps1',
+    '```',
+    '',
+    '```',
+    'git status',
+    '```',
+    '',
+    '```',
+    '这只是一句说明文字',
+    '```',
+  ].join('\n')
+  const ui = await mount($, 'terminal', 'm20', MSG)
+  const fills: any[] = (await ui.findAll({ type: 'Button' })).filter((b: any) => /^fill-/.test(b.key ?? ''))
+  expect(fills.map(b => b.key)).toEqual(['fill-1', 'fill-2'])
+  expect(fills.map(b => b.props.label)).toEqual(['Insert', 'Insert'])
+  await ui.press({ key: 'fill-1' })
+  await ui.press({ key: 'fill-2' })
+  expect(log.filled).toEqual(['!powershell -ExecutionPolicy Bypass -File scripts\label_service\install_autostart.ps1', '!git status'])
+  // 代码区上下各空一行 (不贴着标题栏)
+  const card: any = (await ui.findAll({ type: 'Box' })).find((b: any) => b.key === 'code-1')
+  expect(card).toBeDefined()
+  const bodies = (await ui.findAll({ type: 'Box' })).filter((b: any) => b.props.paddingY === 1 && b.props.paddingX === 2)
+  expect(bodies.length).toBe(3)
+  await ui.unmount()
 })

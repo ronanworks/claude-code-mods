@@ -69,6 +69,14 @@ const SHELL_LANGS: Record<string, ShellKind> = {
   powershell: 'powershell', ps1: 'powershell', pwsh: 'powershell', cmd: 'cmd', bat: 'cmd',
 }
 const SHELL_NAME: Record<ShellKind, string> = { bash: 'bash', powershell: 'PowerShell', cmd: 'cmd', any: 'shell' }
+// 没标语言的代码块: 只有一行、而且看起来像命令才当 shell 命令 (以 ! / $ / PS> 开头, 或第一个词是常见命令)
+const LOOKS_LIKE_CMD =
+  /^(?:!|\$\s|PS [^>]*>\s|(?:powershell|pwsh|cmd|claude|git|gh|npm|npx|pnpm|yarn|bun|node|deno|python3?|py|pip3?|uv|conda|cd|ls|dir|mkdir|winget|choco|scoop|brew|apt|sudo|wsl|ssh|scp|curl|wget|docker|code|start|explorer|open|xdg-open|ffmpeg|make|cargo|go|dotnet|java|(?:Get|Set|New|Start|Stop|Copy|Move|Invoke|Test)-\w+)(?:\s|$))/i
+// 按钮文字 (英文, 和 GitHub 上的代码块一样); 宽度用来给"Copy all"让位
+const LABEL = { copy: 'Copy', copied: 'Copied ✓', insert: 'Insert', copyAll: 'Copy all', open: 'Open' }
+// 显示宽度: 中日韩字符算 2 格, 其余 1 格
+const dw = (s: string) =>
+  [...s].reduce((n, ch) => n + (/[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/.test(ch) ? 2 : 1), 0)
 
 // ---- 跨平台 (usage-hud 里有同样一份; 带 $ 的函数必须写在本文件里, 不能 import) ----
 type OS = 'windows' | 'mac' | 'linux'
@@ -487,6 +495,15 @@ function oneCommand(code: string, kind: ShellKind): string | undefined {
   return c
 }
 
+// 代码块是哪种 shell: 标了 shell 类语言的按语言; 没标语言的一行命令算通用 shell; 标了别的语言 (python、json…) 不算
+function shellKindOf(p: { lang: string; code: string }): ShellKind | undefined {
+  const k = SHELL_LANGS[p.lang.toLowerCase()]
+  if (k) return k
+  if (p.lang) return undefined
+  const lines = p.code.split('\n').filter(l => l.trim())
+  return lines.length === 1 && LOOKS_LIKE_CMD.test((lines[0] ?? '').trim()) ? 'any' : undefined
+}
+
 function preview(code: string): string {
   const lines = code.split('\n')
   const first = (lines[0] ?? '').trim()
@@ -538,13 +555,14 @@ async function fillPrompt($: any, cmd: string, kind: ShellKind) {
       draft = String((await $.prompt.read())?.text ?? '')
     } catch {}
     if (draft.trim()) {
-      $.ui.toast('输入框里有没发出的字, 没覆盖; 清空后再点"填入", 或者用"复制"')
+      $.ui.toast(`输入框里有没发出的字, 没覆盖; 清空后再点 ${LABEL.insert}, 或者用 ${LABEL.copy}`)
       return
     }
-    const r = await $.prompt.fill({ text: '!' + cmd })
+    // 命令本身已经以 ! 开头 (Claude 写给 shell 模式用的) 就不再多加一个
+    const r = await $.prompt.fill({ text: '!' + cmd.replace(/^!\s*/, '') })
     if (!r?.isFilled) {
       const why = r?.refusal === 'dialog' ? '有对话框占着键盘' : r?.refusal === 'no_composer' ? '这里没有输入框' : '输入框没接收'
-      $.ui.toast('没填进去: ' + why + ', 可以改用"复制"')
+      $.ui.toast(`没填进去: ${why}, 可以改用 ${LABEL.copy}`)
       return
     }
     const shell = await bangShell($)
@@ -558,12 +576,13 @@ async function fillPrompt($: any, cmd: string, kind: ShellKind) {
   }
 }
 
-// 一个代码块的卡片: 标题栏 (语言名 … 填入 复制) + 代码区; key 让整张卡片成为悬停范围
+// 一个代码块的卡片: 标题栏 (语言名 … Insert Copy) + 代码区 (上下各空一行, 不贴着标题栏);
+// key 让整张卡片成为悬停范围
 function codeCard($: any, els: any, p: Extract<Part, { kind: 'code' }>, n: number, rid: string, gap: number) {
   const { Box, Text, Button, Code } = els
   const id = `${rid}:${n}`
   const lang = p.lang.slice(0, 20)
-  const kind = SHELL_LANGS[p.lang.toLowerCase()]
+  const kind = shellKindOf(p)
   const cmd = kind ? oneCommand(p.code, kind) : undefined
   const actions: any[] = []
   if (kind && cmd)
@@ -572,19 +591,19 @@ function codeCard($: any, els: any, p: Extract<Part, { kind: 'code' }>, n: numbe
         key={`fill-${n}`}
         plain
         dimColor
-        label="填入"
+        label={LABEL.insert}
         hover={PRESS_HOVER}
         onPress={() => fillPrompt($, cmd, kind)}
       />,
     )
-  if (copied.has(id)) actions.push(<Text color="success">已复制 ✓</Text>)
+  if (copied.has(id)) actions.push(<Text color="success">{LABEL.copied}</Text>)
   else
     actions.push(
       <Button
         key={`copy-${n}`}
         plain
         dimColor
-        label="复制"
+        label={LABEL.copy}
         hover={PRESS_HOVER}
         onPress={press => copyText($, id, p.code, press.surface, '已复制: ' + preview(p.code))}
       />,
@@ -607,7 +626,7 @@ function codeCard($: any, els: any, p: Extract<Part, { kind: 'code' }>, n: numbe
       >
         {head}
       </Box>
-      <Box paddingX={2} paddingBottom={1}>
+      <Box paddingX={2} paddingY={1}>
         {lang ? <Code source={p.code} language={lang} /> : <Code source={p.code} />}
       </Box>
     </Box>
@@ -661,10 +680,12 @@ async function drawWithCopy($: any, e: any, props: { text: string; isFirstOfRepl
       continue
     }
     n += 1
-    // 回复第一行就是卡片标题栏时, "复制全文"往左让开卡片自己的按钮 (右内边距 2 + 已复制 ✓ 8 格 + 填入 6 格)
+    // 回复第一行就是卡片标题栏时, "Copy all" 往左让开卡片自己的按钮
+    // (右内边距 2 + Copy/Copied ✓ 中较宽的 + Insert 和间距 2 + 再空 1 格)
     if (i === 0) {
-      const kind = SHELL_LANGS[p.lang.toLowerCase()]
-      coverRight = 2 + 8 + (kind && oneCommand(p.code, kind) ? 6 : 0) + 1
+      const kind = shellKindOf(p)
+      const insertW = kind && oneCommand(p.code, kind) ? dw(LABEL.insert) + 2 : 0
+      coverRight = 2 + Math.max(dw(LABEL.copy), dw(LABEL.copied)) + insertW + 1
     }
     rows.push(codeCard($, els, p, n, rid, gap))
   }
@@ -717,13 +738,13 @@ function withCopyAll($: any, e: any, tree: any, text: string, coverRight: number
       <Box position="absolute" top={0} right={coverRight} {...shown}>
         <Box key="copy-all-chip" paddingX={1} backgroundColor={CARD_BODY} hover={{ backgroundColor: CARD_HEAD }}>
           {isCopied ? (
-            <Text color="success">已复制 ✓</Text>
+            <Text color="success">{LABEL.copied}</Text>
           ) : (
             <Button
               key="copy-all"
               plain
               dimColor
-              label="复制全文"
+              label={LABEL.copyAll}
               hover={PRESS_HOVER}
               onPress={press => copyText($, id, body, press.surface, '已复制全文 (' + body.split('\n').length + ' 行)')}
             />
@@ -820,7 +841,7 @@ export const register: Register = on => {
       <Box key="tool-row" flexDirection="row" alignItems="flex-start">
         {base}
         <Box marginLeft={2} flexShrink={0}>
-          <Button key="open-file" plain dimColor label="打开" hover={PRESS_HOVER} onPress={() => act($, abs)} />
+          <Button key="open-file" plain dimColor label={LABEL.open} hover={PRESS_HOVER} onPress={() => act($, abs)} />
         </Box>
       </Box>
     )

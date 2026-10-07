@@ -31,8 +31,8 @@ import { Grid, drawGrid, metrics } from '../lib/cells.js'
 import { makeStage, termWindow, makePointer, makeToast, toastK, canvasLayer, pathAt, seg, easeOut, easeOutBack, easeInOut, lerp } from '../lib/stage.js'
 import { transcript, inputBox, hint, C } from '../lib/claude.js'
 
-const COLS = 96, ROWS = 22, CW = 10, CH = 20, SIZE = 17.06
-const W = 1200, H = 586
+const COLS = 96, ROWS = 23, CW = 10, CH = 20, SIZE = 17.06
+const W = 1200, H = 606
 const FPS = 20, DURATION = 11.0
 
 // ---------------- html-shelf 0.6 的画法 (按 register.tsx; 颜色是主题色) ----------------
@@ -47,11 +47,17 @@ const INVERT = { fg: '#1c1917', bg: ORANGE, bold: true } // 指针正压在按�
 const SYN = { cmd: 'rgb(110,168,254)', plain: 'rgb(222,222,222)' }
 
 // 行号
-const R_REPLY1 = 3, R_CARD = 5, R_REPLY2 = 9, R_LIST = 11, R_TOOL = 15, R_INPUT = 18
+// 卡片 = 标题栏 1 行 + 代码区 (上下各空一行, paddingY 1) 3 行
+const R_REPLY1 = 3, R_CARD = 5, R_CODE = 7, R_REPLY2 = 10, R_LIST = 12, R_TOOL = 16, R_INPUT = 19
+// 0.6.1 起按钮文字是英文 (register.tsx 的 LABEL); toast 仍是中文
+const LABEL = { copy: 'Copy', copied: 'Copied ✓', insert: 'Insert', copyAll: 'Copy all', open: 'Open' }
+// 没标语言、只有一行、以 ! 开头 = 看起来像命令 (LOOKS_LIKE_CMD) -> 也有 Insert; 填入时不重复加 !
+const CMD = String.raw`! powershell -File scripts\setup\install.ps1`
+const FILLED = '!' + CMD.replace(/^!\s*/, '')
 const CARD = { c0: 2, c1: COLS } // 卡片占满消息宽度 ("● " 之后)
-// 标题栏右侧: [填入] 两格空 [复制] , 右内边距 2
+// 标题栏右侧 (没标语言: 只有按钮, 靠右): [Insert] 两格空 [Copy] , 右内边距 2
 const COPY_COLS = [COLS - 2 - 4, COLS - 2]
-const FILL_COLS = [COPY_COLS[0] - 2 - 4, COPY_COLS[0] - 2]
+const FILL_COLS = [COPY_COLS[0] - 2 - 6, COPY_COLS[0] - 2]
 // "复制全文": 回复第一行是正文 -> right = 0; 小底块左右各 1 格内边距
 const CHIP = { c0: COLS - 10, c1: COLS }
 const LIST = [
@@ -78,14 +84,14 @@ const fadeLayer = canvasLayer(body, 12, 9, COLS * CW, ROWS * CH, 20)
 const at = (r, c) => [win.originX + c * CW, win.originY + r * CH]
 const linkCol = i => 4 // "- " 之后
 // 指针路线: [时间, x, y] (箭头尖端)
-const P0 = at(20.6, 70)
+const P0 = at(R_INPUT + 2.6, 70)
 const keys = [
   [0, ...P0],
   [0.25, ...P0],
-  [0.95, ...at(R_CARD + 1.55, 30)],
-  [1.15, ...at(R_CARD + 1.55, 30)],
-  [1.45, ...at(R_CARD + 0.6, FILL_COLS[0] + 2.2)],
-  [2.25, ...at(R_CARD + 0.6, FILL_COLS[0] + 2.2)],
+  [0.95, ...at(R_CODE + 0.55, 36)],
+  [1.15, ...at(R_CODE + 0.55, 36)],
+  [1.45, ...at(R_CARD + 0.6, FILL_COLS[0] + 3.2)],
+  [2.25, ...at(R_CARD + 0.6, FILL_COLS[0] + 3.2)],
   [2.95, ...at(R_LIST + 1.6, linkCol(1) + 10)],
   [5.85, ...at(R_LIST + 1.6, linkCol(1) + 10)],
   [6.55, ...at(R_REPLY2 + 0.6, CHIP.c0 + 5.5)],
@@ -104,10 +110,10 @@ function hover(t) {
   const inRows = (a, b) => r >= a && r <= b
   const on = (cols) => c >= cols[0] && c < cols[1]
   return {
-    card: inRows(R_CARD, R_CARD + 2) && c >= CARD.c0 && c < CARD.c1,
+    card: inRows(R_CARD, R_CARD + 3) && c >= CARD.c0 && c < CARD.c1,
     onFill: r === R_CARD && on(FILL_COLS),
     onCopy: r === R_CARD && on(COPY_COLS),
-    reply1: inRows(R_REPLY1, R_CARD + 2) && c >= 0 && c < COLS,
+    reply1: inRows(R_REPLY1, R_CARD + 3) && c >= 0 && c < COLS,
     reply2: inRows(R_REPLY2, R_LIST + 2) && c >= 0 && c < COLS,
     chip2: r === R_REPLY2 && on([CHIP.c0, CHIP.c1]),
     tool: inRows(R_TOOL, R_TOOL + 1) && c >= 0 && c < COLS,
@@ -119,8 +125,8 @@ function chip(g, row, h, hot, copied) {
   if (!copied && !h) return
   const bg = hot ? TITLE_BG : CODE_BG
   g.bg(row, CHIP.c0, CHIP.c1, bg)
-  if (copied) g.text(row, CHIP.c0 + 1, '已复制 ✓', { fg: GREEN, bg })
-  else g.text(row, CHIP.c0 + 1, '复制全文', hot ? { fg: ORANGE, bg, bold: true } : { fg: DIMBTN, bg })
+  if (copied) g.text(row, CHIP.c0 + 1, LABEL.copied, { fg: GREEN, bg })
+  else g.text(row, CHIP.c0 + 1, LABEL.copyAll, hot ? { fg: ORANGE, bg, bold: true } : { fg: DIMBTN, bg })
 }
 
 function drawTerminal(ctx, m, t) {
@@ -129,15 +135,14 @@ function drawTerminal(ctx, m, t) {
   const filled = t >= CLICK_FILL + 0.08
   const copiedAll = t >= CLICK_ALL && t < CLICK_ALL + COPIED_MS / 1000
   // 第一条回复: 一句话 + 一张单行 PowerShell 卡片
-  transcript(g, 0, [{ kind: 'user', text: '整理一下这次的渲染结果，写个说明' }, { kind: 'text', text: '要看 docs 里有哪些文件，可以直接跑：' }])
+  transcript(g, 0, [{ kind: 'user', text: '整理一下这次的渲染结果，写个说明' }, { kind: 'text', text: '要在别的机器上重跑，先装依赖：' }])
   g.bg(R_CARD, CARD.c0, CARD.c1, h.card ? TITLE_BG_HOT : TITLE_BG)
-  g.text(R_CARD, CARD.c0 + 2, 'powershell', { fg: C.inactive })
   const btn = (label, cols, under) => g.text(R_CARD, cols[0], label, under ? INVERT : h.card ? { fg: ORANGE, bold: true } : { fg: DIMBTN })
-  btn('填入', FILL_COLS, h.onFill)
-  btn('复制', COPY_COLS, h.onCopy)
-  g.bg(R_CARD + 1, CARD.c0, CARD.c1, CODE_BG)
-  g.runs(R_CARD + 1, CARD.c0 + 2, [['Get-ChildItem', { fg: SYN.cmd }], [' docs', { fg: SYN.plain }]])
-  g.bg(R_CARD + 2, CARD.c0, CARD.c1, CODE_BG) // 代码下方留一行同色空白
+  btn(LABEL.insert, FILL_COLS, h.onFill)
+  btn(LABEL.copy, COPY_COLS, h.onCopy)
+  // 代码区: 上下各空一行 (paddingY 1); 没标语言, 引擎按纯文本画
+  for (let r = R_CARD + 1; r <= R_CARD + 3; r++) g.bg(r, CARD.c0, CARD.c1, CODE_BG)
+  g.text(R_CODE, CARD.c0 + 2, CMD, { fg: SYN.plain })
   chip(g, R_REPLY1, h.reply1, false, false)
   // 第二条回复: 文件路径变成链接 (文件 / 图片 / 文件夹都能点)
   g.text(R_REPLY2, 0, '●', { fg: C.text })
@@ -147,11 +152,11 @@ function drawTerminal(ctx, m, t) {
     g.runs(r, 2, [['- ', { fg: C.text }], [path, { fg: C.link, ul: true }], [' ' + note, { fg: C.text }]])
   })
   chip(g, R_REPLY2, h.reply2, h.chip2, copiedAll)
-  if (h.chip2 && !copiedAll) g.text(R_REPLY2, CHIP.c0 + 1, '复制全文', INVERT)
+  if (h.chip2 && !copiedAll) g.text(R_REPLY2, CHIP.c0 + 1, LABEL.copyAll, INVERT)
   // 工具行: Write 写完的文件后面有 "打开" (指针在这一行上时变橙)
-  transcript(g, R_TOOL - 1, [{ kind: 'tool', name: TOOL.name, args: TOOL.args, state: 'ok', result: [TOOL.result], after: [['打开', h.tool ? { fg: ORANGE, bold: true } : { fg: DIMBTN }]] }])
+  transcript(g, R_TOOL - 1, [{ kind: 'tool', name: TOOL.name, args: TOOL.args, state: 'ok', result: [TOOL.result], after: [[LABEL.open, h.tool ? { fg: ORANGE, bold: true } : { fg: DIMBTN }]] }])
   // 输入框: 填入 = 以 ! 开头放进输入框, 不提交
-  inputBox(g, R_INPUT, filled ? '!Get-ChildItem docs' : '', Math.floor(t / 0.53) % 2 === 0)
+  inputBox(g, R_INPUT, filled ? FILLED : '', Math.floor(t / 0.53) % 2 === 0)
   hint(g, R_INPUT + 3)
   drawGrid(ctx, g, 0, 0, m)
 }
@@ -186,7 +191,7 @@ const cap = document.createElement('div')
 cap.className = 'caption'
 cap.style.left = winX + 4 + 'px'
 cap.style.top = '22px'
-cap.innerHTML = '<div style="width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#b1b9f9,#7c86e8);align-self:center;display:flex;align-items:center;justify-content:center;color:#15131c;font:700 12px Cascadia Mono">&lt;/&gt;</div><b>html-shelf</b><span>代码块一键复制 / 填入输入框 · 回复里的文件路径单击就打开 · 悬停复制全文</span>'
+cap.innerHTML = '<div style="width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#b1b9f9,#7c86e8);align-self:center;display:flex;align-items:center;justify-content:center;color:#15131c;font:700 12px Cascadia Mono">&lt;/&gt;</div><b>html-shelf</b><span>代码块一键 Copy / Insert 进输入框 · 回复里的文件路径单击就打开 · 悬停 Copy all</span>'
 document.body.appendChild(cap)
 
 window.demo = {
