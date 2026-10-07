@@ -447,6 +447,16 @@ test('配速: 公式、情绪档位、窗口刚开始不外推、没读数不报
   expect(early.ratio).toBeUndefined()
   expect(early.willRunOut).toBe(false)
   expect(moodOf(early)).toBe('normal')
+  // 本周窗口满 1 天才算配速: 才过 7h 用了 6% (按速度外推 4 天多用完) -> 不外推, 不报警; 23h 用了 30% 也不算
+  const wk7h = paceOf(lim('seven_day', 6, now + 7 * 24 * H - 7 * H), now)!
+  expect(wk7h.ratio).toBeUndefined()
+  expect(wk7h.willRunOut).toBe(false)
+  expect(moodOf(wk7h)).toBe('normal')
+  expect(paceOf(lim('seven_day', 30, now + 7 * 24 * H - 23 * H), now)!.willRunOut).toBe(false)
+  // 过了 25h 用了 30%: 配速 2.0, 约 58h 后用完 (重置还要 143h) -> 报警, 冒汗
+  const wk25h = paceOf(lim('seven_day', 30, now + 7 * 24 * H - 25 * H), now)!
+  expect(wk25h.willRunOut).toBe(true)
+  expect(moodOf(wk25h)).toBe('sweat')
   // 已过比例 (时间刻度用): 1h/5h = 0.2; 3 天/7 天; 窗口刚开始不外推也照样有 (0.01); 用量不到 1% 也有
   expect(Math.abs((a.elapsedFrac ?? -1) - 0.2) < 1e-9).toBe(true)
   expect(Math.abs((w?.elapsedFrac ?? -1) - 4 / 7) < 1e-9).toBe(true)
@@ -516,15 +526,23 @@ test('配速预警上面板: 会用完时 5小时 的百分比变红, 写红色 
   expect(l5.extra?.color).toBe('#f87171')
   await noOld(late)
   await late.unmount()
-  // 本周会用完 (用户截图那种: 窗口刚过 7h 用了 6%, 4 天多后用完): 完整版写红色 "4d用完", 不写光秃秃的 "4d12h"
-  usage = { ...USAGE, rateLimits: [lim('five_hour', 10, t + 4 * H), lim('seven_day', 6, t + 7 * 24 * H - 7 * H)] }
+  // 本周会用完 (过了 30h 用了 25%, 3 天多后用完): 完整版写红色 "3d用完", 不写光秃秃的 "3d18h"
+  usage = { ...USAGE, rateLimits: [lim('five_hour', 10, t + 4 * H), lim('seven_day', 25, t + 7 * 24 * H - 30 * H)] }
   const wkWarn = await mountHint($, 'terminal', 140)
   const ww = await meterOf(wkWarn, 'wk')
-  expect(ww.extra?.text).toBe('4d用完')
+  expect(ww.extra?.text).toBe('3d用完')
   expect(ww.extra?.color).toBe('#f87171')
   expect(ww.pct?.color).toBe('#f87171')
   await noOld(wkWarn)
   await wkWarn.unmount()
+  // 负路径 (用户截图那种): 本周才过 7h 用了 6% -> 不满 1 天不预警: 暗色重置倒计时 "6d17h", 百分比不红
+  usage = { ...USAGE, rateLimits: [lim('five_hour', 10, t + 4 * H), lim('seven_day', 6, t + 7 * 24 * H - 7 * H)] }
+  const wkEarly = await mountHint($, 'terminal', 140)
+  const we = await meterOf(wkEarly, 'wk')
+  expect(we.extra?.text).toBe('6d17h')
+  expect(we.extra?.color).toBe('#71717a')
+  expect(we.pct?.color === '#f87171').toBe(false)
+  await wkEarly.unmount()
   usage = { ...USAGE, rateLimits: [lim('five_hour', 50, t + 3 * H), lim('seven_day', 12, t + 3 * 24 * H)] }
   const late90 = await mountHint($, 'terminal', 90)
   expect((await meterOf(late90, 'h5')).extra?.text).toBe('2h00m用完')

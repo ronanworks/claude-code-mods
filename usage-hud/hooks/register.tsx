@@ -74,8 +74,10 @@ const KEEP_ENDED = 10 // 看板里保留最近结束的子代理个数
 const WARN = '#f87171' // 会用完时 百分比 和 "40m用完" 的颜色
 // 额度窗口长度
 const WINDOW_MS: Record<string, number> = { five_hour: 5 * 3600_000, seven_day: 7 * 86400_000 }
-// 窗口刚开始时外推不可靠: 已过时间不到窗口的 2% (5小时=6分钟, 本周=3.4小时) 不算配速
+// 窗口刚开始时外推不可靠, 已过时间不够就不算配速 (不报警、不影响情绪):
+//   5小时 = 窗口的 2% (6 分钟); 本周 = 满 1 天 (一周开头几个小时的用量起伏大, 按它外推会早早报警)
 const MIN_ELAPSED_FRAC = 0.02
+const MIN_ELAPSED_MS: Record<string, number> = { seven_day: 86400_000 }
 const PANIC_RUNOUT_MS = 30 * 60_000
 // 线性外推下 "配速 > 1" 就等于 "会在重置前用完", 稍微用快一点就报警太吵: 配速到 1.15 才算会用完
 const PACE_WARN = 1.15
@@ -311,7 +313,8 @@ export function paceOf(l: Limit | undefined, now: number): Pace | undefined {
   const resetIn = Math.max(0, at - now)
   const elapsed = Math.min(win, win - resetIn)
   const elapsedFrac = Math.max(0, Math.min(1, elapsed / win))
-  if (pct < 1 || elapsed < win * MIN_ELAPSED_FRAC || resetIn <= 0) return { pct, resetIn, elapsedFrac, willRunOut: false }
+  const minElapsed = MIN_ELAPSED_MS[l.kind] ?? win * MIN_ELAPSED_FRAC
+  if (pct < 1 || elapsed < minElapsed || resetIn <= 0) return { pct, resetIn, elapsedFrac, willRunOut: false }
   const ratio = pct / ((elapsed / win) * 100)
   const runOutIn = pct >= 100 ? 0 : (100 - pct) / (pct / elapsed)
   return { pct, ratio, runOutIn, resetIn, elapsedFrac, willRunOut: runOutIn < resetIn && ratio >= PACE_WARN }
