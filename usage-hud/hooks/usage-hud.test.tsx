@@ -1597,7 +1597,7 @@ test('气泡: 一轮结束「搞定 12s」, 约 5 秒后消失; 新的顶掉旧�
   await $.turn.start({ text: 'hi', turnId: 't1' } as any)
   await clock.advance(12_000)
   await $.turn.complete({ answer: '', durationMs: 12_000, isAborted: false, turnId: 't1', reason: 'answer' } as any)
-  await clock.advance(200)
+  await clock.advance(2_200) // v0.16.2: 结束后约 2 秒没有新的一段才算做完
   await ui.advance(150)
   const b = await bubble()
   expect(b?.text).toBe('「搞定 12s」')
@@ -1730,9 +1730,10 @@ test('工具在跑时 (接上真的横栏): 大螃蟹停下原地做这个工具
   await ui.unmount()
 })
 
-// ======================== v0.16.1: 后台子代理 (一次提问里主线程结束好几段) ========================
-// Claude Code 2.1.289 默认把 Agent 子代理放到后台: 主线程先结束一段 (turn.complete), 等子代理;
-// 每个子代理结束时主线程再接着跑一段 (turn.start 的 text 是空的); 最后一行写整次提问的时长
+// ======================== v0.16.1 / v0.16.2: 后台子代理 (一次提问里主线程结束好几段) ========================
+// Claude Code 2.1.289 默认把 Agent 子代理放到后台. 子代理结束后, 它的结果作为一次 prompt.submit 送回主线程
+// (origin.kind = 'task-notification'): 主线程闲着时另起一段, 正在跑时塞进这一段 (带 turnId).
+// 一次提问 = 从用户自己发消息 (composer) 起; 做完 = 最后一段结束、没有子代理在跑、等约 2 秒没有新的一段
 async function bgSetup($: any, on: any) {
   const T = 1_900_000_000_000
   let list: any[] = []
@@ -1742,107 +1743,244 @@ async function bgSetup($: any, on: any) {
   const band = await mountAbove($, 120, 4)
   const props = async () => ((await band.find({ type: 'Client' })) as any)?.props.props
   const kid = (id: string, status = 'running') => ({ id, description: id, type: 'general-purpose', status })
+  const ids = new Set<string>()
+  const setStatus = () => (list = [...ids].map(id => kid(id, ended.has(id) ? 'completed' : 'running')))
+  const ended = new Set<string>()
   return {
     clock,
     band,
     props,
-    setAgents: (l: any[]) => (list = l),
-    kid,
     spend: (d: number) => (usd += d),
+    // 用户自己回车 / 后台子代理的结果送回来 (闲着时 or 塞进正在跑的一段)
+    userSays: (text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } } as any),
+    notice: (intoTurn?: string) => $.prompt.submit({ text: '<task-notification>', wait: false, origin: { kind: 'task-notification' }, ...(intoTurn ? { turnId: intoTurn } : {}) } as any),
+    // 主线程派一个后台子代理: Agent 工具马上返回 ("Backgrounded agent"), 子代理接着在后台跑
+    spawn: async (id: string) => {
+      await $.tool.call({ tool: 'Agent', description: id, prompt: id, run_in_background: true } as any)
+      ids.add(id)
+      setStatus()
+      await $.classic.SubagentStart({ agent_id: id, agent_type: 'general-purpose' } as any)
+    },
+    finish: async (id: string) => {
+      ended.add(id)
+      setStatus()
+      await $.classic.SubagentStop({ agent_id: id, agent_type: 'general-purpose', agent_transcript_path: '', stop_hook_active: false, last_assistant_message: 'ok' } as any)
+    },
   }
 }
 const done = (turnId: string, durationMs: number) => ({ answer: '', durationMs, isAborted: false, turnId, reason: 'answer' }) as any
+const rowText = async ($: any, id: string, durationMs: number) => {
+  const r = await mountTurn($, id, durationMs)
+  const texts = (await r.findAll({ type: 'Text' })).map((x: any) => x.text)
+  await r.unmount()
+  return texts.find((t: string) => t.startsWith(' · ')) ?? ''
+}
 
-test('后台子代理: 主线程先结束一段时子代理还在跑 -> 不庆祝不冒泡; 子代理逐个结束、主线程接着跑完 -> 只庆祝一次, "搞定 N" 的 N = 整次提问的时长', { timeoutMs: 30_000 }, async ($, on) => {
+test('实测 1 的顺序: 主线程停下等 2 个子代理, 每结束一个送一次结果 -> 只庆祝一次, N = 整次提问; 最后一行配合计; 送结果不让螃蟹跳', { timeoutMs: 30_000 }, async ($, on) => {
   const b = await bgSetup($, on)
-  const c0 = (await b.props()).celebSeq
-  // 第 1 段: 用户发消息, 主线程派两个后台子代理, 13 秒后这一段结束
+  const p0 = await b.props()
+  await b.userSays('读 a.txt 和 b.txt')
+  expect((await b.props()).jumpSeq).toBe(p0.jumpSeq + 1) // 用户回车: 跳一下
   await $.turn.start({ text: '读 a.txt 和 b.txt', turnId: 't1' } as any)
-  await $.tool.call({ tool: 'Agent', description: 'a', prompt: 'x' } as any)
-  await $.tool.call({ tool: 'Agent', description: 'b', prompt: 'y' } as any)
-  b.setAgents([b.kid('k1'), b.kid('k2')])
-  await $.classic.SubagentStart({ agent_id: 'k1', agent_type: 'general-purpose' } as any)
-  await $.classic.SubagentStart({ agent_id: 'k2', agent_type: 'general-purpose' } as any)
+  await b.spawn('k1')
+  await b.spawn('k2')
   b.spend(0.17)
   await b.clock.advance(13_000)
-  await $.turn.complete(done('t1', 13_000))
-  let p = await b.props()
-  expect(p.celebSeq).toBe(c0) // 不庆祝
-  expect(p.say?.text?.includes('搞定') ?? false).toBe(false) // 不冒 "搞定"
-  expect(p.agents.length).toBe(2) // 小螃蟹照常跟着走
-  // 第 1 行 (引擎写 "Waiting for 2 background agents to finish"): 这一段的收据
-  const r1 = await mountTurn($, 'row-1', 13_000)
-  expect((await r1.findAll({ type: 'Text' })).map((x: any) => x.text)).toContain(' · $0.17 · 工具 2 次')
-  await r1.unmount()
-  // 第 1 个子代理结束 -> 主线程接着跑 1 秒 (还有 1 个子代理在跑)
+  await $.turn.complete(done('t1', 13_000)) // "Waiting for 2 background agents to finish"
+  expect(await rowText($, 'row-1', 13_000)).toBe(' · $0.17 · 工具 2 次') // 这一段
   await b.clock.advance(2_000)
-  b.setAgents([b.kid('k1', 'completed'), b.kid('k2')])
-  await $.classic.SubagentStop({ agent_id: 'k1', agent_type: 'general-purpose', agent_transcript_path: '', stop_hook_active: false, last_assistant_message: 'ok' } as any)
-  await $.turn.start({ text: '', turnId: 't2' } as any)
+  await b.finish('k1')
+  await b.notice() // k1 的结果送回来 (主线程闲着: 另起一段)
+  await $.turn.start({ text: '<task-notification>', turnId: 't2' } as any)
   b.spend(0.01)
   await b.clock.advance(1_000)
-  await $.turn.complete(done('t2', 1_000))
-  p = await b.props()
-  expect(p.celebSeq).toBe(c0)
-  expect(p.say?.text?.includes('搞定') ?? false).toBe(false)
-  const r2 = await mountTurn($, 'row-2', 1_000)
-  expect((await r2.findAll({ type: 'Text' })).map((x: any) => x.text)).toContain(' · $0.01')
-  await r2.unmount()
-  // 第 2 个子代理结束 -> 主线程接着跑 5 秒, 写一个文件, 这次提问做完
+  await $.turn.complete(done('t2', 1_000)) // "Worked for 1s"
+  expect(await rowText($, 'row-2', 1_000)).toBe(' · $0.01')
   await b.clock.advance(3_000)
-  b.setAgents([b.kid('k1', 'completed'), b.kid('k2', 'completed')])
-  await $.classic.SubagentStop({ agent_id: 'k2', agent_type: 'general-purpose', agent_transcript_path: '', stop_hook_active: false, last_assistant_message: 'ok' } as any)
-  await $.turn.start({ text: '', turnId: 't3' } as any)
+  await b.finish('k2') // 最后一个子代理结束, 它的结果还没送到: 不能先庆祝 (等待放宽到约 10 秒)
+  await b.clock.advance(3_000)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq)
+  await b.notice()
+  await $.turn.start({ text: '<task-notification>', turnId: 't3' } as any)
   await $.tool.call({ tool: 'Write', file_path: CWD + '/summary.md', content: ['1', '2', '3', ''].join(String.fromCharCode(10)) } as any)
   b.spend(0.06)
   await b.clock.advance(5_000)
   await $.turn.complete(done('t3', 5_000))
-  p = await b.props()
-  expect(p.celebSeq).toBe(c0 + 1) // 只庆祝这一次
-  expect(p.say?.text).toBe('「搞定 24s」') // 13 + 2 + 1 + 3 + 5 = 24 秒, 和引擎最后那行 "for 24s" 对得上
-  // 面板的 "上一轮" 也是整次提问: 24 秒, 主线程用了 3 次工具
+  // 最后一行: 引擎写整次提问的时长 13+2+1+3+3+5 = 27 秒 -> 整次提问的合计
+  expect(await rowText($, 'row-3', 27_000)).toBe(' · $0.24 · 改 1 个文件 +3 -0 · 工具 3 次')
+  // 防抖: 刚结束时还不庆祝, 约 2 秒后庆祝一次
+  await b.clock.advance(1_000)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq)
+  await b.clock.advance(1_200)
+  const p = await b.props()
+  expect(p.celebSeq).toBe(p0.celebSeq + 1)
+  expect(p.say?.text).toBe('「搞定 27s」')
+  expect(p.jumpSeq).toBe(p0.jumpSeq + 1) // 两次送结果都没让螃蟹跳
   const hint = await mountHint($, 'terminal', 140)
-  expect((await hint.findAll({ type: 'Text' })).some((x: any) => x.text.includes('上一轮 24s，3 次工具'))).toBe(true)
+  expect((await hint.findAll({ type: 'Text' })).some((x: any) => x.text.includes('上一轮 27s，3 次工具'))).toBe(true)
   await hint.unmount()
-  // 最后一行 (引擎写 "Sautéed for 24s", durationMs = 整次提问): 整次提问的合计收据
-  const r3 = await mountTurn($, 'row-3', 24_000)
-  expect((await r3.findAll({ type: 'Text' })).map((x: any) => x.text)).toContain(' · $0.24 · 改 1 个文件 +3 -0 · 工具 3 次')
-  await r3.unmount()
-  // 之后再画也不会多庆祝
-  await b.clock.advance(10_000)
-  expect((await b.props()).celebSeq).toBe(c0 + 1)
+  await b.clock.advance(15_000)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq + 1)
   await b.band.unmount()
 })
 
-test('后台子代理: 子代理跑完之前用户又发了新消息 -> 上一次提问的庆祝作废; 新提问做完时只庆祝一次, N 从新消息算起', { timeoutMs: 30_000 }, async ($, on) => {
+test('实测 2 的顺序: 主线程不停、先后派 4 个子代理, 最后一个结束时主线程刚好结束一段, 随后来了结果 -> 只庆祝一次, N = 34s; 两行收据各配各的; 迟到的通知不再庆祝', { timeoutMs: 30_000 }, async ($, on) => {
   const b = await bgSetup($, on)
-  const c0 = (await b.props()).celebSeq
+  const p0 = await b.props()
+  await b.userSays('把四个文件都读一遍')
+  await $.turn.start({ text: '把四个文件都读一遍', turnId: 'm1' } as any)
+  await b.spawn('a1')
+  await b.spawn('b1')
+  await b.clock.advance(5_000)
+  await b.finish('a1')
+  await b.finish('b1')
+  await b.notice('m1') // 结果塞进正在跑的这一段
+  await b.notice('m1')
+  await b.spawn('a2')
+  await b.spawn('b2')
+  await b.clock.advance(10_000)
+  await b.finish('a2')
+  await b.notice('m1')
+  b.spend(0.2)
+  await b.clock.advance(15_000)
+  await b.finish('b2') // 最后一个子代理和这一段同时结束
+  await $.turn.complete(done('m1', 30_000)) // "Churned for 30s"
+  expect(await rowText($, 'row-30s', 30_000)).toBe(' · $0.20 · 工具 4 次')
+  await b.clock.advance(1_000)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq) // 0.16.1 在这里提前庆祝了 "搞定 31s"
+  await b.notice() // b2 的结果送回来, 主线程又跑一段
+  await $.turn.start({ text: '<task-notification>', turnId: 'm2' } as any)
+  b.spend(0.01)
+  await b.clock.advance(3_000)
+  await $.turn.complete(done('m2', 3_000)) // "Churned for 34s"
+  expect(await rowText($, 'row-34s', 34_000)).toBe(' · $0.21 · 工具 4 次') // 合计
+  await b.clock.advance(2_100)
+  const p = await b.props()
+  expect(p.celebSeq).toBe(p0.celebSeq + 1)
+  expect(p.say?.text).toBe('「搞定 34s」')
+  expect(p.jumpSeq).toBe(p0.jumpSeq + 1) // 只有用户回车那一下
+  // 庆祝之后又来了迟到的通知: 接着记账, 不再庆祝
+  await b.notice()
+  await $.turn.start({ text: '<task-notification>', turnId: 'm3' } as any)
+  await b.clock.advance(1_000)
+  await $.turn.complete(done('m3', 1_000))
+  await b.clock.advance(12_000)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq + 1)
+  await b.band.unmount()
+})
+
+test('子代理跑完之前用户又发了新消息 -> 上一次提问作废; 旧子代理的结果后来送到算新提问的接续; 只庆祝一次, N 从新消息算起', { timeoutMs: 30_000 }, async ($, on) => {
+  const b = await bgSetup($, on)
+  const p0 = await b.props()
+  await b.userSays('第一个问题')
   await $.turn.start({ text: '第一个问题', turnId: 'q1' } as any)
-  await $.tool.call({ tool: 'Agent', description: 'a', prompt: 'x' } as any)
-  b.setAgents([b.kid('k1')])
-  await $.classic.SubagentStart({ agent_id: 'k1', agent_type: 'general-purpose' } as any)
+  await b.spawn('k1')
   await b.clock.advance(10_000)
   await $.turn.complete(done('q1', 10_000))
-  expect((await b.props()).celebSeq).toBe(c0)
-  // 子代理还在跑, 用户发了新消息
   await b.clock.advance(5_000)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq)
+  await b.userSays('第二个问题') // 子代理还在跑, 用户发了新消息: 第一个问题作废
   await $.turn.start({ text: '第二个问题', turnId: 'q2' } as any)
-  await b.clock.advance(4_000)
-  b.setAgents([b.kid('k1', 'completed')])
-  await $.classic.SubagentStop({ agent_id: 'k1', agent_type: 'general-purpose', agent_transcript_path: '', stop_hook_active: false, last_assistant_message: 'ok' } as any)
-  await $.turn.complete(done('q2', 4_000))
-  const p = await b.props()
-  expect(p.celebSeq).toBe(c0 + 1) // 只有新提问庆祝了一次
-  expect(p.say?.text).toBe('「搞定 4s」') // 从新消息算起, 不是从第一个问题算起的 19 秒
-  // 负路径: 没有子代理的普通提问照旧每次都庆祝
-  await $.turn.start({ text: '第三个问题', turnId: 'q3' } as any)
+  await b.clock.advance(2_000)
+  await $.turn.complete(done('q2', 2_000))
   await b.clock.advance(3_000)
-  await $.turn.complete(done('q3', 3_000))
-  expect((await b.props()).celebSeq).toBe(c0 + 2)
-  expect((await b.props()).say?.text).toBe('「搞定 3s」')
-  const r = await mountTurn($, 'row-q3', 3_000)
-  expect((await r.findAll({ type: 'Text' })).some((x: any) => x.text.startsWith(' · '))).toBe(false) // 没花钱没改文件没用工具: 不追加
-  await r.unmount()
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq) // k1 还在跑: 先不庆祝
+  await b.finish('k1')
+  await b.clock.advance(1_000)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq) // k1 的结果还没送到
+  await b.notice() // 主线程闲着: 结果另起一段, 算第二个问题的接续, 不是新提问
+  await $.turn.start({ text: '<task-notification>', turnId: 'q3' } as any)
+  await b.clock.advance(1_000)
+  await $.turn.complete(done('q3', 1_000))
+  await b.clock.advance(2_100)
+  const p = await b.props()
+  expect(p.celebSeq).toBe(p0.celebSeq + 1) // 只庆祝一次
+  expect(p.say?.text).toBe('「搞定 7s」') // 从第二个问题算到最后一段结束 (2 + 3 + 1 + 1), 不是从第一个问题算起的 22 秒
+  await b.clock.advance(15_000)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq + 1)
   await b.band.unmount()
 })
 
+test('子代理的结果塞进正在跑的一段 (带 turnId): 这一段结束后约 2 秒庆祝 (欠的通知已到, 不等 10 秒); N = 整次提问; 送结果不跳', { timeoutMs: 30_000 }, async ($, on) => {
+  const b = await bgSetup($, on)
+  const p0 = await b.props()
+  await b.userSays('查一下 c.txt')
+  await $.turn.start({ text: '查一下 c.txt', turnId: 'm1' } as any)
+  await b.spawn('k1')
+  await b.clock.advance(4_000)
+  await b.finish('k1')
+  const p1 = await b.props()
+  await b.notice('m1') // 主线程还在跑: 结果直接塞进这一段, 不会另起一段
+  expect((await b.props()).jumpSeq).toBe(p1.jumpSeq)
+  await b.clock.advance(2_000)
+  await $.turn.complete(done('m1', 6_000))
+  await b.clock.advance(1_000)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq)
+  await b.clock.advance(1_200)
+  const p = await b.props()
+  expect(p.celebSeq).toBe(p0.celebSeq + 1)
+  expect(p.say?.text).toBe('「搞定 6s」')
+  await b.clock.advance(15_000)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq + 1)
+  await b.band.unmount()
+})
+
+test('没有子代理的普通提问: 结束后约 2 秒庆祝一次; 结束前再说一句会取消这次等待 (说的是新提问, 从新的算)', { timeoutMs: 30_000 }, async ($, on) => {
+  const b = await bgSetup($, on)
+  const p0 = await b.props()
+  await b.userSays('你好')
+  await $.turn.start({ text: '你好', turnId: 'n1' } as any)
+  b.spend(0.02)
+  await b.clock.advance(3_000)
+  await $.turn.complete(done('n1', 3_000))
+  expect(await rowText($, 'row-n1', 3_000)).toBe(' · $0.02')
+  await b.clock.advance(1_500)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq)
+  await b.clock.advance(700)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq + 1)
+  expect((await b.props()).say?.text).toBe('「搞定 3s」')
+  // 第二个问题: 结束后 1 秒内用户又说了一句 -> 第二个问题不庆祝, 第三个做完才庆祝
+  await b.userSays('再来')
+  await $.turn.start({ text: '再来', turnId: 'n2' } as any)
+  await b.clock.advance(2_000)
+  await $.turn.complete(done('n2', 2_000))
+  await b.clock.advance(1_000)
+  await b.userSays('还有')
+  await $.turn.start({ text: '还有', turnId: 'n3' } as any)
+  await b.clock.advance(1_000)
+  await $.turn.complete(done('n3', 1_000))
+  await b.clock.advance(2_100)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq + 2)
+  expect((await b.props()).say?.text).toBe('「搞定 1s」')
+  await b.band.unmount()
+})
+
+// v0.16.2: token 只算主线程和认得的子代理; 引擎自己的分叉 (压缩 / 记忆) 带的 id 谁的列表里都没有, 不算
+test('token: 主线程 + 认得的子代理才算, 先到的子代理用量等认出来再补上, 认不出的分叉不算', async ($, on) => {
+  const IN: Record<string, number> = { '': 100, 'fork-x': 200, k1: 40 }
+  on('turn.step', async function* ($: any, e: any) {
+    const n = IN[String(e.agentId ?? '')] ?? 0
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { input_tokens: n, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-opus-5-5' } }
+  } as any)
+  // 统计脚本跑不起来: 底数为 0, 面板只显示本次启动以来的实时累计, 数字小到能逐个核对
+  const calls = await start($, on, { ...WIN, broken: ['node'] }, { agents: () => [] })
+  const step = async (agentId?: string) => {
+    const it: any = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1, ...(agentId ? { agentId } : {}) } as any)
+    while (!(await it.next()).done) {}
+  }
+  const detail = async () => {
+    const ui = await mountHint($, 'terminal', 140)
+    calls.toasts.length = 0
+    await ui.press({ key: 'btn-token' })
+    await ui.unmount()
+    return calls.toasts.find(x => x.includes('token：')) ?? '(没有明细)'
+  }
+  await step() // 主线程 100
+  await step('k1') // 子代理还没登记: 先记着
+  await step('fork-x') // 引擎自己的分叉: 一直认不出来
+  expect(await detail()).toContain('新输入 100，输出 1')
+  await $.classic.SubagentStart({ agent_id: 'k1', agent_type: 'general-purpose' } as any)
+  expect(await detail()).toContain('新输入 140，输出 2')
+  await step('k1') // 认出来以后直接算
+  expect(await detail()).toContain('新输入 180，输出 3')
+})

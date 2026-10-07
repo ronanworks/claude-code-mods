@@ -179,20 +179,49 @@ let tick = 0 // 定时器跳了几次 (面板隐藏时 frame 不走, 额度提�
 type TurnRun = { turnId: string; startedAt: number; usd0?: number; files: Set<string>; add: number; del: number; tools: number }
 type Receipt = { turnId: string; startedAt: number; completedAt: number; durationMs: number; usd?: number; files: number; add: number; del: number; tools: number; boundTo?: string }
 let turnRun: TurnRun | undefined
-let lastReceipt: Receipt | undefined // 只有最近一轮能被配对
+// 最近一段的收据: seg = 这一段, cum = 从提问开始的累计; 只有最近一段能被配对, 一对只配一行
+type ReceiptPair = { seg: Receipt; cum: Receipt; startedAt: number; completedAt: number; boundTo?: string }
+let lastReceipt: ReceiptPair | undefined
 
-// ---- 一次提问 (v0.16.1) ----
+// ---- 一次提问 (v0.16.1 / v0.16.2) ----
 // Claude Code 2.1.289 起 Agent 子代理默认放到后台跑: 一次提问里主线程会结束好几段 (每段一个不带 agentId 的
-//   turn.complete, 引擎那行写 "Waiting for 2 background agents to finish" / "Worked for 1s"), 每个子代理结束时
-//   主线程再接着跑一段 (turn.start 的 text 是空的); 最后一段结束那行写的是整次提问的时长 ("Sautéed for 24s")
-// 所以: 新提问 = turn.start 带着用户打的字 (text 不是空的); 接着跑的一段 = text 是空的, 还算同一次提问
-//   只有 "主线程结束 + 没有任何后台子代理在跑" 才算这次提问做完: 这时才庆祝、冒 "搞定 N", N = 整次提问的时长
-//   中间那几段: 不庆祝不冒泡, 收据照旧按那一段配 (引擎那几行写的也是那一段的时长);
-//   最后一行的收据 = 整次提问的合计 (时长 / 花费 / 改了几个文件 / 工具次数), 和引擎那行的时长对得上
-//   子代理跑完之前用户又发了新消息: 上一次提问作废 (不庆祝)
-type Ask = { startedAt: number; usd0?: number; files: Set<string>; add: number; del: number; tools: number; mainTools: number; segments: number }
+//   turn.complete); 子代理结束后, 它的结果作为一次 prompt.submit 送回主线程 (origin.kind = 'task-notification'):
+//   主线程闲着时另起一段, 正在跑时塞进这一段. 最后一段结束那行引擎写的是整次提问的时长 ("Churned for 34s")
+// 怎么划分 "一次提问" (v0.16.2 起看 prompt.submit 的来源, 不看 turn.start 带不带字):
+//   origin 不是 task-notification (用户回车 / 手机 / SDK / 定时任务 / 别的会话 ...) = 新提问, 上一次没做完的作废
+//   task-notification = 同一次提问的延续
+// 什么时候算做完 (防抖): 主线程结束一段、没有子代理在跑之后, 先等 END_WAIT_MS; 这段时间里来了 task-notification
+//   或新的一段 (turn.start) 就取消, 接着等下一段; 什么都没来才算做完 -> 只庆祝一次, "搞定 N" 的 N = 从用户发出
+//   这条提问到最后一段结束; 有子代理已经结束、它的结果还没送回来时, 等待放宽到 END_LATE_MS
+//   已经庆祝过的提问又来了迟到的通知: 接着记账, 不再庆祝
+// 收据: 每一行 TurnDuration 同时拿去比 "这一段的时长" 和 "从提问开始的累计时长", 对上累计的显示整次提问的合计
+const END_WAIT_MS = 2000
+const END_LATE_MS = 10_000
+type Ask = {
+  startedAt: number
+  usd0?: number
+  files: Set<string>
+  add: number
+  del: number
+  tools: number
+  mainTools: number
+  segments: number
+  kidEnds: number // 这次提问里结束了几个 "会送结果回来" 的后台子代理
+  notices: number // 收到了几次 task-notification
+  lastEndAt: number // 主线程最后一段结束的时间
+  celebrated: boolean
+}
+const newAsk = (at: number, usd0?: number): Ask => ({ startedAt: at, usd0, files: new Set(), add: 0, del: 0, tools: 0, mainTools: 0, segments: 0, kidEnds: 0, notices: 0, lastEndAt: 0, celebrated: false })
+let askFromNext = false // 用户在主线程跑着时打了字 (排队): 下一个 turn.start 才算新提问开始
+let submitSinceTurn = '' // 上一个 turn.start 之后来过的 prompt.submit 的来源 ('' = 没有)
+let endToken = 0 // "提问做完" 的防抖: 每次取消 / 重排都换一个号
+let endArmed = 0 // 正在等的那个号 (0 = 没在等)
+let mainOpen = false // 主线程的一段正在跑 (只由 turn.start / turn.complete 改; 渲染时的 isWorking 不算, 免得测试或时序把它冲掉)
 let ask: Ask | undefined
 const receiptOf: Record<string, Receipt | null> = {} // TurnDuration 行的 requestId -> 收据 (null = 确定不配)
+// 子代理的 token: 只算主线程和认得的子代理 (和会话记录一样); 引擎自己的分叉 (压缩 / 记忆 ...) 的 id 谁也不认得,
+// 不算. 认出来之前先记在这里, 认出来 (SubagentStart / $.agent.list()) 时再加进去
+const tokPending = new Map<string, Tok>()
 const rowSeenAt: Record<string, number> = {} // TurnDuration 行第一次画出来的时间
 
 // ---- 额度恢复提醒 ----
@@ -202,6 +231,8 @@ const watch: Record<string, Watch> = {}
 // ---- 子代理看板 ----
 type Kid = {
   id: string
+  ran?: boolean // 见过它在跑 (结束时才算一次 "子代理结束")
+  endNoted?: boolean // 这次结束已经记过
   type: string
   desc: string
   startedAt: number
@@ -809,22 +840,83 @@ async function syncAgents($: any, now: number) {
     if (!a?.id) continue
     seen.add(a.id)
     const k = kidOf(a.id, now)
-    k.known = true
+    kidKnown(k)
     k.listed = true
     if (a.description) k.desc = safe(String(a.description))
     if (a.type) k.type = safe(String(a.type))
     if (a.status) k.status = String(a.status)
-    if (k.status === 'running') k.endedAt = undefined
-    else if (k.endedAt === undefined) k.endedAt = now
+    if (k.status === 'running') {
+      k.endedAt = undefined
+      k.ran = true
+    } else if (k.endedAt === undefined) {
+      k.endedAt = now
+      kidEnded(k)
+    }
   }
   for (const k of kids.values()) {
     if (k.listed && !seen.has(k.id) && k.endedAt === undefined) {
       k.endedAt = now
       if (k.status === 'running') k.status = 'completed'
+      kidEnded(k)
     }
   }
   agentsNow = (list ?? []).filter((a: any) => a?.status === 'running').length
   pruneKids()
+  armEnd($, false) // 最后一个子代理刚结束、主线程闲着: 开始等它的结果送回来
+}
+
+// 子代理认出来了: 先前记下的 token 加进去
+function kidKnown(k: Kid) {
+  k.known = true
+  const t = tokPending.get(k.id)
+  if (t) {
+    tokPending.delete(k.id)
+    tokLive.input += t.input
+    tokLive.output += t.output
+    tokLive.cacheRead += t.cacheRead
+    tokLive.cacheWrite += t.cacheWrite
+  }
+}
+// 一个子代理结束了: 后台子代理会把结果送回主线程, 记一笔 "还欠一次通知"
+// (主线程正在用 Agent 工具时结束的, 是前台子代理: 结果随工具返回, 不会再来通知)
+function kidEnded(k: Kid) {
+  if (!k.ran || k.endNoted) return
+  k.endNoted = true
+  if (ask && toolKind(currentTool) !== 'agent') ask.kidEnds += 1
+}
+
+// "提问做完" 的防抖: 主线程闲着、没有子代理在跑时才排; force = 主线程刚结束一段 (重新计时)
+function armEnd($: any, force: boolean) {
+  const q = ask
+  if (!q || q.celebrated || mainOpen) return
+  if (agentsNow > 0 || runningKids().length > 0) return // 还有子代理在跑: 等它们
+  if (!force && endArmed) return
+  const wait = q.kidEnds > q.notices ? END_LATE_MS : END_WAIT_MS
+  const token = ++endToken
+  endArmed = token
+  $.clock.after(wait, () => void endAsk($, token))
+}
+function cancelEnd() {
+  endToken += 1
+  endArmed = 0
+}
+// 等够了, 什么都没来: 这次提问做完, 庆祝一次
+async function endAsk($: any, token: number) {
+  if (token !== endToken) return
+  endArmed = 0
+  const q = ask
+  if (!q || q.celebrated || mainOpen || agentsNow > 0 || runningKids().length > 0) return
+  q.celebrated = true
+  const now = await $.clock.now()
+  lastTurnMs = (q.lastEndAt || now) - q.startedAt
+  lastTurnTools = q.mainTools
+  celebrateUntil = now + (lastTurnMs > 180_000 ? 2600 : 1400)
+  celebSeq += 1
+  celebFrames = Math.round((celebrateUntil - now) / FRAME_MS)
+  sayNow('搞定 ' + dur(lastTurnMs), now)
+  // 庆祝结束时再画一次, 让只有客户端的会话也能回到平常的样子
+  $.clock.after(celebrateUntil - now + 100, () => redraw($))
+  redraw($)
 }
 
 async function openAgents($: any, fromPress: boolean) {
@@ -1554,11 +1646,13 @@ export function receiptFor(id: string, durationMs: number | undefined, now: numb
   const seen = (rowSeenAt[id] ??= now)
   const r = lastReceipt
   const inWindow = !!r && !r.boundTo && seen >= r.startedAt && seen <= r.completedAt + ROW_LATE_MS
-  const durOk = !!r && (typeof durationMs !== 'number' || Math.abs(durationMs - r.durationMs) <= Math.max(2000, r.durationMs * 0.05))
-  if (r && inWindow && durOk) {
+  const near = (x: Receipt) => typeof durationMs !== 'number' || Math.abs(durationMs - x.durationMs) <= Math.max(2000, x.durationMs * 0.05)
+  // 先比累计 (这一行写的是整次提问的时长 -> 整次提问的合计), 再比这一段
+  const hit = r && inWindow ? (near(r.cum) ? r.cum : near(r.seg) ? r.seg : undefined) : undefined
+  if (r && hit) {
     r.boundTo = id
-    receiptOf[id] = r
-    return r
+    receiptOf[id] = hit
+    return hit
   }
   const maybeRunning = !!turnRun && seen >= turnRun.startedAt
   const maybeLast = inWindow && now <= (r?.completedAt ?? 0) + ROW_LATE_MS
@@ -1735,6 +1829,13 @@ export const register: Register = on => {
     await loadPrefs($)
     // 散步道和气泡从头开始
     say = undefined
+    // 一次提问的记账从头开始
+    ask = undefined
+    mainOpen = false
+    askFromNext = false
+    submitSinceTurn = ''
+    lastReceipt = undefined
+    cancelEnd()
     saidCtxFull = false
     saidRunOut.clear()
     for (const k of Object.keys(wasRunOut)) delete wasRunOut[k]
@@ -1831,8 +1932,15 @@ export const register: Register = on => {
         usd0 = (await $.session.usage()).cost?.usd
       } catch {}
       turnRun = { turnId: String(e.turnId ?? ''), startedAt: turnStartedAt, usd0, files: new Set(), add: 0, del: 0, tools: 0 }
-      // 一次提问: 用户打了字 = 新提问 (还没做完的上一次提问作废); text 是空的 = 后台子代理结束后主线程接着跑, 还是这次提问
-      if (!ask || String((e as any).text ?? '') !== '') ask = { startedAt: turnStartedAt, usd0, files: new Set(), add: 0, del: 0, tools: 0, mainTools: 0, segments: 0 }
+      // 新的一段开始: "提问做完" 的等待取消
+      mainOpen = true
+      cancelEnd()
+      // 这一段属于哪次提问: 前面来的是 task-notification -> 延续; 用户排队的提问 -> 新提问从这里开始;
+      // 前面什么都没来 (比如测试或引擎自己接着跑): 上一次还没做完就延续, 做完了就算新提问
+      const via = submitSinceTurn
+      submitSinceTurn = ''
+      if (askFromNext || !ask || (via !== 'task-notification' && via === '' && ask.celebrated)) ask = newAsk(turnStartedAt, usd0)
+      askFromNext = false
       ask.segments += 1
       const h = new Date().getHours()
       if (h >= 1 && h < 5 && !nightNoticed) {
@@ -1852,7 +1960,15 @@ export const register: Register = on => {
     }
     const result = yield* next(e)
     if (result?.usage) {
-      addTok(tokLive, result.usage)
+      // 主线程和认得的子代理才算 (和会话记录一致); 还没认出来的 id 先记着, 引擎自己的分叉一直认不出来就不算
+      const id = e.agentId ? String(e.agentId) : ''
+      if (!id || kids.get(id)?.known) addTok(tokLive, result.usage)
+      else {
+        const t = tokPending.get(id) ?? zeroTok()
+        addTok(t, result.usage)
+        tokPending.set(id, t)
+        if (tokPending.size > 50) tokPending.delete(tokPending.keys().next().value as string)
+      }
       redraw($)
     }
     return result
@@ -1886,9 +2002,11 @@ export const register: Register = on => {
         k.startedAt = now
         k.lastAt = now
       }
-      k.known = true
+      kidKnown(k)
       k.status = 'running'
+      k.ran = true
       k.endedAt = undefined
+      k.endNoted = false
       if ((e as any).agent_type) k.type = safe(String((e as any).agent_type))
       redraw($)
     }
@@ -1900,13 +2018,16 @@ export const register: Register = on => {
     if (id) {
       const now = await $.clock.now()
       const k = kidOf(id, now)
-      k.known = true
+      kidKnown(k)
+      k.ran = true
       if (k.endedAt === undefined) k.endedAt = now
       if (k.status === 'running') k.status = 'completed'
+      kidEnded(k)
       if ((e as any).agent_type && !k.type) k.type = safe(String((e as any).agent_type))
       const last = String((e as any).last_assistant_message ?? '')
       if (last) k.note = clip(safe(last.replace(/\s+/g, ' ')), 120)
       pruneKids()
+      armEnd($, false)
       redraw($)
     }
     return next(e)
@@ -1965,9 +2086,11 @@ export const register: Register = on => {
       try {
         usd1 = (await $.session.usage()).cost?.usd
       } catch {}
+      const q = ask
+      if (q) q.lastEndAt = now
       if (run && (!e.turnId || !run.turnId || e.turnId === run.turnId)) {
-        // 这一段的收据 (中间那几行引擎写的也是这一段的时长)
-        lastReceipt = {
+        // 这一段
+        const seg: Receipt = {
           turnId: run.turnId,
           startedAt: run.startedAt,
           completedAt: now,
@@ -1978,41 +2101,30 @@ export const register: Register = on => {
           del: run.del,
           tools: run.tools,
         }
+        // 从提问开始的累计 (只有一段时就是这一段)
+        const cum: Receipt =
+          q && q.segments > 1
+            ? {
+                turnId: run.turnId,
+                startedAt: q.startedAt,
+                completedAt: now,
+                durationMs: now - q.startedAt,
+                usd: q.usd0 !== undefined && usd1 !== undefined ? Math.max(0, usd1 - q.usd0) : undefined,
+                files: q.files.size,
+                add: q.add,
+                del: q.del,
+                tools: q.tools,
+              }
+            : seg
+        lastReceipt = { seg, cum, startedAt: run.startedAt, completedAt: now }
       }
       engineWorking = false
+      mainOpen = false
       currentTool = ''
       lastActive = now
-      // 还有后台子代理在跑: 这次提问还没做完, 不庆祝、不冒 "搞定" (螃蟹带着小螃蟹照常走)
+      // 这次提问做没做完: 子代理都结束了、等一小会儿没有新的一段才算 (见 armEnd / endAsk)
       await syncAgents($, now)
-      const waiting = agentsNow > 0 || runningKids().length > 0
-      if (!waiting) {
-        const q = ask
-        ask = undefined
-        // N = 整次提问的时长 (从用户发出消息那一轮开始算); 只有一段时和以前一样
-        const t0 = q?.startedAt ?? turnStartedAt
-        lastTurnMs = t0 ? now - t0 : 0
-        lastTurnTools = q ? q.mainTools : turnTools
-        // 分了几段的提问: 最后一行配整次提问的合计 (引擎那行写的就是整次提问的时长)
-        if (q && q.segments > 1) {
-          lastReceipt = {
-            turnId: String(e.turnId ?? ''),
-            startedAt: q.startedAt,
-            completedAt: now,
-            durationMs: lastTurnMs,
-            usd: q.usd0 !== undefined && usd1 !== undefined ? Math.max(0, usd1 - q.usd0) : undefined,
-            files: q.files.size,
-            add: q.add,
-            del: q.del,
-            tools: q.tools,
-          }
-        }
-        celebrateUntil = now + (lastTurnMs > 180_000 ? 2600 : 1400)
-        celebSeq += 1
-        celebFrames = Math.round((celebrateUntil - now) / FRAME_MS)
-        sayNow('搞定 ' + dur(lastTurnMs), now)
-        // 庆祝结束时再画一次, 让只有客户端的会话也能回到平常的样子
-        $.clock.after(celebrateUntil - now + 100, () => redraw($))
-      }
+      armEnd($, true)
       await refreshRepo($)
       await checkMilestones($)
       redraw($)
@@ -2063,11 +2175,31 @@ export const register: Register = on => {
     }
     return next(e)
   })
-  // 用户发出消息: 螃蟹跳一下, 落地冒一小簇尘土
+  // 有消息送进会话 (v0.16.2 看 origin.kind):
+  //   task-notification (后台子代理的结果送回来) = 同一次提问的延续; 其他来源 = 新提问, 上一次没做完的作废
+  //   跳一下只给用户自己发的 (终端回车 composer / 手机网页 bridge)
   on('prompt.submit', async ($, e, next) => {
-    jumpSeq += 1
-    lastBusyAt = await $.clock.now()
-    if (crabOn && layout !== 'off') redraw($)
+    const kind = String((e as any).origin?.kind ?? 'composer')
+    const now = await $.clock.now()
+    cancelEnd()
+    submitSinceTurn = kind
+    lastBusyAt = now
+    if (kind === 'task-notification') {
+      if (ask) ask.notices += 1
+    } else if ((e as any).turnId) {
+      askFromNext = true // 主线程跑着时打的字: 排在后面, 它那一段开始时才算新提问
+    } else {
+      let usd0: number | undefined
+      try {
+        usd0 = (await $.session.usage()).cost?.usd
+      } catch {}
+      ask = newAsk(now, usd0)
+      askFromNext = false
+    }
+    if (kind === 'composer' || kind === 'bridge') {
+      jumpSeq += 1
+      if (crabOn && layout !== 'off') redraw($)
+    }
     return next(e)
   })
 
