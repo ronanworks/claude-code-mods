@@ -6,7 +6,7 @@
 
 **Desktop-app comforts for the Claude Code terminal**
 
-An animated pixel-crab usage panel · one-click HTML links · copyable code cards
+An animated, moody pixel-crab usage panel · one-click file links · code cards you can copy or fill in
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-d97757.svg)](LICENSE)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.287%2B-d97757)
@@ -23,8 +23,8 @@ Claude Code [mods](https://code.claude.com/docs/en/plugins/mods/overview) are pl
 
 | Mod | What it does |
 |---|---|
-| **usage-hud** | A usage panel under the prompt. A pixel crab acts out the tool Claude is using. Model and effort, project and branch, session time and cost, context / 5-hour / weekly usage and tokens, all at a glance |
-| **html-shelf** | `.html` paths in Claude's replies become links that open in your browser with one click. Code blocks are drawn as cards with a copy button |
+| **usage-hud** | A usage panel under the prompt. A pixel crab acts out the tool Claude is using, and its mood follows how fast you burn your quota. Model and effort, project and branch, session time and cost, context / 5-hour / weekly usage and tokens, all at a glance |
+| **html-shelf** | File paths in Claude's replies (HTML, PDF, images, video, folders …) open with one click. Code blocks are drawn as cards you can copy or drop into the prompt |
 
 > The UI text is in Chinese. The GIFs on this page show exactly what you get.
 
@@ -98,17 +98,35 @@ The crab follows what Claude is doing:
 | Writing or editing a file | Taps with its right claw as the page fills with text |
 | Running a command | Types with both claws, terminal cursor blinking |
 | On the web | A spinning globe |
-| Running subagents | Baby crabs hop beside it |
+| Running subagents | One to three baby crabs run and hop beside it |
 | Done with a turn | Jumps with claws up, gold sparkles |
 | Idle / idle for 5 minutes | Blinks and looks around / sleeps, blowing bubbles |
 | At ≥ 80% context | Turns red and sweats; at ≥ 95% flashes red |
 
-Clickable parts: model name → `/model`, project name → opens the project folder, context → `/context`, 5-hour / weekly → `/usage`, token → a breakdown.
+**The crab also has moods that follow your quota pace** (pace = actual usage ÷ the usage expected for the time elapsed):
+
+| Quota | The crab | The panel |
+|---|---|---|
+| Using less than the clock (pace < 0.8) | Wears sunglasses, relaxed | Normal |
+| Clearly ahead of pace, on track to run out before the reset | Sweats | The text after the bar turns red: "about 40m to empty" |
+| Runs out within 30 minutes, or ≥ 95% used | Panics with claws up and a "!" | Same as above |
+
+**More practical touches**
+
+- **Turn receipt**: the line that ends each turn gets a tail such as `· $0.42 · 2 files changed +5 -1 · 3 tool calls` (terminal only).
+- **One-click compact**: at 75% context a "compact" button appears in the context cell and runs `/compact`.
+- **Quota-reset reminder**: after the 5-hour or weekly quota passed 30% and then resets, a toast says it's back.
+- **Subagent board**: `/hud agents`, or click "+N agents" in the status cell, opens a side pane. It shows how long each subagent has run, how long since it last did something, and its last tool. Anything silent for over 5 minutes is flagged red as possibly stuck.
+
+Clickable parts: model name → `/model`, effort level → `/effort`, project name → opens the project folder, context → `/context`, 5-hour / weekly → `/usage`, token → a breakdown, "+N agents" → the subagent board.
+
+The panel shrinks with the window: 66–95 columns (such as macOS's default 80) shows the crab plus a 3 × 2 grid, and under 66 columns a single line.
 
 | Command | What it does |
 |---|---|
 | `/hud` | Cycles full → compact (one line) → hidden |
 | `/hud top`, `/hud bottom` | Puts the panel above or below the prompt (below by default) |
+| `/hud agents` | Opens the subagent board; Esc closes it |
 
 In the desktop app, the panel becomes a dedicated SVG card (crab + dashboard) above the prompt, borderless, following the light or dark theme:
 
@@ -121,11 +139,19 @@ In the desktop app, the panel becomes a dedicated SVG card (crab + dashboard) ab
 
 <img src="assets/html-shelf.gif" alt="html-shelf: copy a code card with one click, open an HTML link in the browser" width="900">
 
-- `.html` paths in a reply (bare paths, `` `code` ``, or `[text](path)`) become links that open in your default browser with one click. Only files that exist become links.
-- `/open` opens the HTML file most recently mentioned or written; `/open 3` opens the third most recent.
-- Each code block is drawn as a card: the language on the left of the title bar, "复制" (copy) on the right. Hover the card and the title bar lights up while "复制" turns orange; click to copy and see "已复制 ✓" (copied). It copies the exact text with no trailing newline, so pasting into a shell doesn't run it.
-- Card colors come from Claude Code's current theme, so they suit both dark and light themes.
-- Code cards are drawn in the terminal only; the desktop app already has its own copy button.
+- **File paths become links**: paths in a reply (bare paths, `` `code` ``, or `[text](path)`) open in their default app with one click. Only files that exist become links.
+  - Supported: HTML, Markdown, PDF, images (png / jpg / gif / svg …), audio and video (mp4 / mov / mp3 …), Office files (docx / xlsx / pptx), csv, txt.
+  - Folders open in your file manager.
+  - Scripts and executables (bat, ps1, sh, py, exe …) are **never run**; a click only selects them in their folder.
+- **"打开" (open) on tool rows**: when Claude writes a file, its `Write(...)` row gets an open button.
+- **`/open`**: `/open` opens the most recent file, `/open 3` the third most recent, and `/open list` lists the last 10 as clickable links.
+- **Code cards**: each code block is drawn as a card, with the language on the left of the title bar and buttons on the right.
+  - "复制" (copy): copies the exact text with no trailing newline, so pasting into a shell doesn't run it.
+  - "填入" (fill in): single-line shell commands get this extra button. It puts the command into the prompt prefixed with `!`, and it runs on your machine only when you press Enter. A draft you're still typing is never overwritten.
+  - Hover the card and the title bar lights up while the buttons turn orange; after a click you see "已复制 ✓" (copied).
+  - Card colors come from Claude Code's current theme, so they suit both dark and light themes.
+- **Copy the whole reply**: hover a reply and "复制全文" (copy all) appears at its top right. It copies that block's text with common indentation removed.
+- Code cards, the buttons and non-HTML links appear in the terminal only; the desktop app already has its own.
 
 ## Requirements
 

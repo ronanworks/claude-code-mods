@@ -5,9 +5,11 @@
 
 export type CrabMode = 'idle' | 'work' | 'celebrate' | 'sleep'
 export type CrabKind = 'think' | 'read' | 'edit' | 'bash' | 'web' | 'agent' | 'other'
-export type CrabState = { mode: CrabMode; kind: CrabKind; heat: 'ok' | 'hot' | 'crit'; agents: number }
+export type CrabMood = 'chill' | 'normal' | 'sweat' | 'panic'
+export type CrabState = { mode: CrabMode; kind: CrabKind; heat: 'ok' | 'hot' | 'crit'; agents: number; mood?: CrabMood }
 
-export type Meter = { pct?: number; extra: string }
+// warn: 预计重置前用完, 说明文字画成红色
+export type Meter = { pct?: number; extra: string; warn?: boolean }
 export type DashData = {
   model: string
   effort: string
@@ -40,6 +42,12 @@ const C = {
   sea: '#3b82f6',
   land: '#4ade80',
   gear: '#a1a1aa',
+  shades: '#09090b',
+  bridge: '#52525b',
+  alarm: '#ef4444',
+  kid: '#f2a07b', // 小螃蟹浅一号, 和大螃蟹分得开
+  kidLeg: '#a4553d',
+  warn: '#f87171',
 }
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const EFFORT_COLOR: Record<string, string> = { low: '#a1a1aa', medium: '#60a5fa', high: '#fbbf24', xhigh: '#fb923c', max: '#f87171' }
@@ -68,11 +76,41 @@ function armSwap(side: 'L' | 'R', fill: string, dur: number, startUp: boolean): 
 }
 
 // tile: 客户端里给螃蟹配一块和仪表盘同色同高的深色底板, 也挡住小窗框可能的白底
+// 子代理小螃蟹: 客户端可以用细像素, 画一只 6x5 的正面小螃蟹 (终端版只有 3 列宽, 画不了这么细)
+//   C = 钳子和身体 (浅一号的橙色, 和大螃蟹分得开), E = 眼睛 (深色, 四周都是身体), L = 腿; 腿两帧交替 = 在走
+//   1-2 只: 每个细像素 0.5 单位 (整只 3 x 2.5); 3 只: 0.4 单位 (整只 2.4 x 2), 竖着排在右侧 x 13-16
+const KID_BODY = ['C....C', 'CC..CC', 'CECCEC', '.CCCC.']
+const KID_LEGS = ['L.LL.L', '.L..L.']
+function kidSvg(x: number, y: number, u: number, phase: number, hop: string[] | null): string {
+  const paint = (rows: string[], y0: number) => {
+    let out = ''
+    rows.forEach((row, dy) => {
+      for (let dx = 0; dx < row.length; dx++) {
+        const ch = row[dx]
+        const fill = ch === 'C' ? C.kid : ch === 'E' ? C.eye : ch === 'L' ? C.kidLeg : ''
+        if (fill) out += `<rect x="${+(x + dx * u).toFixed(2)}" y="${+(y + (y0 + dy) * u).toFixed(2)}" width="${u}" height="${u}" fill="${fill}"/>`
+      }
+    })
+    return out
+  }
+  const a = phase % 2 ? ['0', '1'] : ['1', '0']
+  const b = a.map(v => (v === '1' ? '0' : '1'))
+  const legs = `<g>${steps('opacity', a, 0.5)}${paint([KID_LEGS[0]], 4)}</g><g>${steps('opacity', b, 0.5)}${paint([KID_LEGS[1]], 4)}</g>`
+  return `<g class="kid">${hop ? moves(hop, 1, -phase * 0.17) : ''}${paint(KID_BODY, 0)}${legs}</g>`
+}
+
 export function crabSvg(st: CrabState, scale = 6, tile?: { w: number; h: number }): string {
   const body = st.heat === 'ok' ? C.body : C.hot
   const parts: string[] = []
   const fx: string[] = []
+  const mood = st.mood ?? 'normal'
   const working = st.mode === 'work'
+  const nKids = Math.min(3, Math.max(0, st.agents))
+  const zoneFree = nKids === 0 // 右侧有子代理时让给小螃蟹 (和终端版同一套规则)
+  // 闲置 (或睡着) 时慌张: 双钳举起 + 左右发抖, 睡着的也叫醒
+  const panicIdle = mood === 'panic' && (st.mode === 'idle' || st.mode === 'sleep')
+  const mode: CrabMode = panicIdle ? 'idle' : st.mode
+  const chill = mood === 'chill' && mode === 'idle'
   const look = working && st.kind !== 'bash' && st.kind !== 'agent' ? 1 : 0
 
   // 身体 (含颜色闪烁)
@@ -80,10 +118,10 @@ export function crabSvg(st: CrabState, scale = 6, tile?: { w: number; h: number 
   parts.push(`<rect x="2" y="0" width="8" height="4" fill="${body}">${bodyAnim}</rect>`)
 
   // 胳膊
-  if (st.mode === 'celebrate') parts.push(arm('L', 'up', body), arm('R', 'up', body))
+  if (mode === 'celebrate' || panicIdle) parts.push(arm('L', 'up', body), arm('R', 'up', body))
   else if (working && st.kind === 'bash') parts.push(armSwap('L', body, 0.3, true), armSwap('R', body, 0.3, false))
   else if (working && st.kind === 'edit') parts.push(arm('L', 'out', body), armSwap('R', body, 0.3, true))
-  else if (st.mode === 'idle') {
+  else if (mode === 'idle') {
     // 每 12 秒挥一次右钳
     parts.push(arm('L', 'out', body))
     const v = ['1', '1', '1', '1', '1', '1', '1', '1', '1', '0', '1', '0']
@@ -94,29 +132,42 @@ export function crabSvg(st: CrabState, scale = 6, tile?: { w: number; h: number 
   // 腿: 走路时两对腿交替抬起
   const legsA = px(2, 4, body) + px(7, 4, body)
   const legsB = px(4, 4, body) + px(9, 4, body)
-  if (working) parts.push(`<g>${steps('opacity', ['1', '1', '1', '0'], 0.8)}${legsA}</g><g>${steps('opacity', ['1', '0', '1', '1'], 0.8)}${legsB}</g>`)
+  if (working || panicIdle) parts.push(`<g>${steps('opacity', ['1', '1', '1', '0'], panicIdle ? 0.4 : 0.8)}${legsA}</g><g>${steps('opacity', ['1', '0', '1', '1'], panicIdle ? 0.4 : 0.8)}${legsB}</g>`)
   else parts.push(legsA + legsB)
 
   // 眼睛: 睡觉闭眼; 其余时候会眨眼, 闲置时左右张望
   const eyesOpen = px(4 + look, 1, C.eye) + px(7 + look, 1, C.eye)
   const eyesShut = px(4 + look, 1, C.eyeShut) + px(7 + look, 1, C.eyeShut)
-  if (st.mode === 'sleep') parts.push(eyesShut)
-  else {
+  if (mode === 'sleep') parts.push(eyesShut)
+  else if (chill) {
+    // 悠闲: 戴墨镜, 不眨眼不张望
+    parts.push(px(3, 1, C.shades, 2, 1), px(5, 1, C.bridge, 2, 1), px(7, 1, C.shades, 2, 1))
+  } else {
     const blinkOpen = ['1', '1', '1', '1', '1', '1', '1', '1', '1', '1', '1', '1', '1', '1', '0']
-    const glance = st.mode === 'idle' ? moves(['0 0', '0 0', '0 0', '0 0', '-1 0', '1 0', '0 0', '0 0'], 16) : ''
+    const glance = panicIdle ? moves(['-1 0', '1 0'], 0.3) : mode === 'idle' ? moves(['0 0', '0 0', '0 0', '0 0', '-1 0', '1 0', '0 0', '0 0'], 16) : ''
     parts.push(
       `<g>${glance}<g>${steps('opacity', blinkOpen, 4.5)}${eyesOpen}</g><g>${steps('opacity', blinkOpen.map(x => (x === '1' ? '0' : '1')), 4.5)}${eyesShut}</g></g>`,
     )
   }
 
-  // 头边汗珠
-  if (st.heat !== 'ok' && st.mode !== 'celebrate') fx.push(`<rect x="1" y="0" width="1" height="1" fill="${C.sweat}">${steps('y', ['0', '1', '2'], 0.9)}${steps('opacity', ['1', '1', '0'], 0.9)}</rect>`)
+  // 头边汗珠: 上下文告急, 或额度 冒汗 / 慌张
+  if ((st.heat !== 'ok' || mood === 'sweat' || mood === 'panic') && mode !== 'celebrate')
+    fx.push(`<rect x="1" y="0" width="1" height="1" fill="${C.sweat}">${steps('y', ['0', '1', '2'], 0.9)}${steps('opacity', ['1', '1', '0'], 0.9)}</rect>`)
+  // 慌张的 "!": 闲置且右侧空着 -> 右侧竖一个大 "!"; 否则头顶上方一个红点闪
+  if (mood === 'panic' && mode !== 'celebrate') {
+    if (panicIdle && zoneFree) fx.push(`<g>${steps('opacity', ['1', '0.35'], 0.5)}${px(14, -1, C.alarm, 1, 3)}${px(14, 3, C.alarm)}</g>`)
+    else fx.push(`<rect x="1" y="-1" width="1" height="1" fill="${C.alarm}">${steps('opacity', ['1', '0'], 0.5)}</rect>`)
+  }
 
-  // 右边 3 像素宽的道具区 (x 13-15)
-  if (st.mode === 'celebrate') {
+  // 右边 3 像素宽的道具区 (x 13-15); 有子代理时让给小螃蟹
+  if (mode === 'celebrate') {
     const spots: Array<[number, number]> = [[13, 0], [15, 1], [14, 3], [13, 6], [15, 5], [1, 0], [10, 0]]
-    spots.forEach(([x, y], i) => fx.push(`<rect x="${x}" y="${y - 1}" width="1" height="1" fill="${C.spark}">${steps('opacity', ['1', '0', '1'], 0.6, -i * 0.2)}</rect>`))
-  } else if (st.mode === 'sleep') {
+    spots.forEach(([x, y], i) => {
+      if (zoneFree || x < 13) fx.push(`<rect x="${x}" y="${y - 1}" width="1" height="1" fill="${C.spark}">${steps('opacity', ['1', '0', '1'], 0.6, -i * 0.2)}</rect>`)
+    })
+  } else if (!zoneFree) {
+    // 道具 / 泡泡让位
+  } else if (mode === 'sleep') {
     fx.push(`<rect x="14" y="5" width="1" height="1" fill="${C.bubble}">${steps('y', ['5', '4', '3', '2', '1', '0'], 2.4)}</rect>`)
     fx.push(`<rect x="15" y="5" width="1" height="1" fill="${C.bubble}">${steps('y', ['2', '1', '0', '5', '4', '3'], 2.4)}</rect>`)
   } else if (working) {
@@ -153,15 +204,13 @@ export function crabSvg(st: CrabState, scale = 6, tile?: { w: number; h: number 
       }
     }
   }
-  // 子代理: 身边跳动的小螃蟹
-  if (st.agents > 0 && st.mode !== 'celebrate' && (!working || st.kind === 'agent')) {
-    for (let i = 0; i < Math.min(3, st.agents); i++) {
-      fx.push(`<g>${moves(['0 0', '0 -1'], 0.5, -i * 0.17)}${px(13 + i, 4, C.body)}${px(13 + i, 3, i % 2 ? C.body : '#b5634a')}</g>`)
-    }
-  }
+  // 子代理小螃蟹: 任何状态下都画, 盖在最上面; 1 只上下跳着走, 2-3 只排成一列走
+  if (nKids === 1) fx.push(kidSvg(13, 1.5, 0.5, 0, ['0 0', '0 -0.5', '0 0', '0 0.5']))
+  else if (nKids === 2) fx.push(kidSvg(13, -0.5, 0.5, 0, ['0 0', '0 0.5']), kidSvg(13, 2.75, 0.5, 1, ['0 0', '0 0.5']))
+  else if (nKids >= 3) for (let i = 0; i < 3; i++) fx.push(kidSvg(13.3, -0.9 + i * 2.3, 0.4, i, null))
 
   // 走路时整只上下颠; 睡觉时慢慢呼吸
-  const bob = working ? moves(['0 0', '0 1', '0 0', '0 1'], 0.8) : st.mode === 'celebrate' ? moves(['0 0', '0 -1'], 0.4) : st.mode === 'sleep' ? moves(['0 0', '0 1'], 2.4) : ''
+  const bob = working ? moves(['0 0', '0 1', '0 0', '0 1'], 0.8) : mode === 'celebrate' ? moves(['0 0', '0 -1'], 0.4) : mode === 'sleep' ? moves(['0 0', '0 1'], 2.4) : ''
   const W = 16
   const H = 7
   const art = `<g>${bob}${parts.join('')}</g>${fx.join('')}`
@@ -221,9 +270,9 @@ function flow(x: number, y: number, runs: Run[], size = 13, anchor: 'start' | 'e
 }
 const SEP: Run = ['  ·  ', T.sep]
 
-// "2h12m 后重置" -> "2h", "1d18h 后重置" -> "1d", "240k / 1.0M" -> "240k"
+// "2h12m 后重置" -> "2h", "1d18h 后重置" -> "1d", "240k / 1.0M" -> "240k", "约 40m 后用完" -> "40m"
 function shortExtra(s: string): string {
-  const t = s.replace(/\s*后重置$/, '').split('/')[0].trim()
+  const t = s.replace(/\s*后(重置|用完)$/, '').replace(/^约\s*/, '').split('/')[0].trim()
   const hm = t.match(/^(\d+)h\d+m$/)
   if (hm) return hm[1] + 'h'
   const dh = t.match(/^(\d+)d\d+h$/)
@@ -252,7 +301,7 @@ function meterSvg(id: string, x0: number, y: number, cw: number, label: string, 
     )
   }
   out.push(
-    flow(x0 + cw, y, [[pctText, m.pct === undefined ? T.muted : heat(p), 700, 12.5], extra ? ['  ' + extra, T.muted, 0, 11] : null], 12.5, 'end'),
+    flow(x0 + cw, y, [[pctText, m.pct === undefined ? T.muted : heat(p), 700, 12.5], extra ? ['  ' + extra, m.warn ? C.warn : T.muted, m.warn ? 700 : 0, 11] : null], 12.5, 'end'),
   )
   return out.join('')
 }
