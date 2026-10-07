@@ -11,7 +11,7 @@ import { crabSvg, dashSvg, type DashData } from './desktop'
 //
 // 完整版是 "螃蟹 + 3 行 x 3 列" 的对齐网格, 每列起点在三行里完全一致:
 //   模型   Opus 5.5 ▁▂▃▅▇ medium   项目   my-app main               会话   6d18h   $199.91
-//   上下文 ━━━━━━━━  14% 140k/1.0M   5小时  ━━━━━━━━  14% 3h05m后重置  本周   ━━━━━━━━  43% 1d18h后重置
+//   上下文 ━━━━━━━━  14% 140k/1.0M   5小时  ━━━━━━│━━━━━━  14% 3h05m    本周   ━━│━━━━━━━━━━  43% 1d18h
 //   状态   ▃▅▂ 读文件        12s     工具   Bash 12  Read 4         子代理 2 个运行中
 //
 // 螃蟹动画 (全部用像素画, 不用可能宽度不一的符号):
@@ -33,7 +33,13 @@ import { crabSvg, dashSvg, type DashData } from './desktop'
 //   一键压缩: 上下文 >=75% 时 "上下文" 那格出现 [压缩] 按钮 -> /compact; 额度重置后弹一次 "已恢复" 提示
 //   子代理看板: /hud agents 或点状态格里的 "+N代理" -> 侧边面板, 列出每个子代理的时长/最后动静/工具/状态
 //   点档位文字 -> /effort 打开档位滑块
-//   子代理小螃蟹: 有子代理在跑时, 右侧 3 列让给 3x3 (3 只时 3x2) 的小螃蟹, 干活时也看得见
+//   子代理小螃蟹: 有子代理在跑时, 右侧 3 列让给小螃蟹, 干活时也看得见
+//
+// v0.13 改动:
+//   时间刻度: 5小时/本周 的用量条上画一道亮色 │, 位置 = 窗口已过时间 / 窗口长度; 彩色段超过刻度 = 用得比时间快
+//   文字缩短: 平时只写重置倒计时 "1h54m" (暗色); 会用完时百分比和文字都变红, 写 "40m用完" (放不下就只写红色倒计时)
+//     完整版 5小时/本周 的附加那段从 11 列缩到 7 列, 省下的给用量条; 中等版三根条仍然一样长
+//   子代理小螃蟹: 不管几个子代理都只画一只 (3x2, 没有眼睛), 右下角慢慢跳; 数量看 "+N代理"
 //
 // 螃蟹各种状态怎么叠 (从高到低, 只有一个能决定 "姿势"):
 //   1. 庆祝 (一轮刚结束)       -> 举钳跳 + 闪光, 情绪标记暂时不画
@@ -64,7 +70,7 @@ const COMPACT_AT = 75 // 上下文到这个百分比出现 [压缩] 按钮
 const STUCK_MS = 5 * 60_000 // 子代理运行中超过这么久没有工具动作 -> "可能卡住"
 const AGENTS_PANE = 'hud-agents'
 const KEEP_ENDED = 10 // 看板里保留最近结束的子代理个数
-const WARN = '#f87171' // "约40m后用完" 的颜色
+const WARN = '#f87171' // 会用完时 百分比 和 "40m用完" 的颜色
 // 额度窗口长度
 const WINDOW_MS: Record<string, number> = { five_hour: 5 * 3600_000, seven_day: 7 * 86400_000 }
 // 窗口刚开始时外推不可靠: 已过时间不到窗口的 2% (5小时=6分钟, 本周=3.4小时) 不算配速
@@ -174,11 +180,12 @@ const COL = {
   bridge: 0x52525b, // 墨镜鼻梁
   alarm: 0xef4444, // 慌张的 "!"
   kid: 0xf2a07b, // 小螃蟹用浅一号的颜色: 它的钳子会挨着大螃蟹的右钳 (x=11 和 x=12), 同色会连成一片
-  kidEye: 0xf5f5f4, // 小螃蟹的眼睛用浅色: 3 列宽的小螃蟹眼睛上方是空的, 深色眼睛在深色终端里会看不见
+  kidEye: 0xf5f5f4, // 0.12 的小螃蟹眼睛 (会闪的浅色像素); 0.13 起不画眼睛, 留着给测试确认画面里没有它
   kidLeg: 0xa4553d,
 }
 const DEF = 0x01000000
 const TRACK = 0x3f3f46
+const TICK = 0xe5e5e5 // 用量条上的时间刻度 │: 绿/黄/红的彩色段和暗色段里都看得清
 const DIM = '#71717a'
 const ACCENT = '#d97757'
 const VIOLET = '#a78bfa'
@@ -282,7 +289,8 @@ function big(n: number): string {
 // 预计用完 = 现在 + (100 - 实际用量) / (实际用量 / 已过时间)
 // 注意: 线性外推下 "会在重置前用完" 和 "配速 > 1" 是同一件事 (100 x 已过 < 用量 x 窗口)
 export type Mood = 'chill' | 'normal' | 'sweat' | 'panic'
-export type Pace = { pct: number; ratio?: number; runOutIn?: number; resetIn?: number; willRunOut: boolean }
+// elapsedFrac = 窗口已过的比例 (0-1), 用量条上的时间刻度画在这里; 窗口刚开始 (配速不外推) 时也有
+export type Pace = { pct: number; ratio?: number; runOutIn?: number; resetIn?: number; elapsedFrac?: number; willRunOut: boolean }
 type Limit = { kind: string; percentUsed: number; resetsAt?: string }
 
 export function paceOf(l: Limit | undefined, now: number): Pace | undefined {
@@ -293,10 +301,11 @@ export function paceOf(l: Limit | undefined, now: number): Pace | undefined {
   if (!win || !isFinite(at)) return { pct, willRunOut: false }
   const resetIn = Math.max(0, at - now)
   const elapsed = Math.min(win, win - resetIn)
-  if (pct < 1 || elapsed < win * MIN_ELAPSED_FRAC || resetIn <= 0) return { pct, resetIn, willRunOut: false }
+  const elapsedFrac = Math.max(0, Math.min(1, elapsed / win))
+  if (pct < 1 || elapsed < win * MIN_ELAPSED_FRAC || resetIn <= 0) return { pct, resetIn, elapsedFrac, willRunOut: false }
   const ratio = pct / ((elapsed / win) * 100)
   const runOutIn = pct >= 100 ? 0 : (100 - pct) / (pct / elapsed)
-  return { pct, ratio, runOutIn, resetIn, willRunOut: runOutIn < resetIn && ratio >= PACE_WARN }
+  return { pct, ratio, runOutIn, resetIn, elapsedFrac, willRunOut: runOutIn < resetIn && ratio >= PACE_WARN }
 }
 
 const MOOD_RANK: Record<Mood, number> = { chill: 0, normal: 1, sweat: 2, panic: 3 }
@@ -315,16 +324,20 @@ export function moodOf(...paces: Array<Pace | undefined>): Mood {
   return ms.reduce((a, b) => (MOOD_RANK[b] > MOOD_RANK[a] ? b : a))
 }
 
-// 用量条后面那段: 会用完 -> "约40m后用完" (红色), 否则 "3h05m后重置"; 窄的时候只放时间
-// "后" 字和 "后重置" 对齐在第 6 列; "约" 放不下就省掉
+// 用量条后面那段: 平时只写重置倒计时 "1h54m" (暗色); 会用完 -> "40m用完" (红色), 放不下 "用完" 两个字就只写红色倒计时
 function limitExtra(p: Pace | undefined, extraW: number): { text: string; warn: boolean } {
   if (!p || p.resetIn === undefined) return { text: '', warn: false }
   if (p.willRunOut && p.runOutIn !== undefined) {
     const d = durShort(p.runOutIn)
-    const head = dw('约' + d) <= 5 ? '约' + d : d
-    return { text: extraW >= 11 ? padR(head, 5) + '后用完' : head, warn: true }
+    return { text: dw(d + '用完') <= extraW ? d + '用完' : d, warn: true }
   }
-  return { text: padR(durShort(p.resetIn), 5) + (extraW >= 11 ? '后重置' : ''), warn: false }
+  return { text: durShort(p.resetIn), warn: false }
+}
+// 时间刻度落在条的第几格: 已过比例 x 条长, 四舍五入, 夹在条里; 没有重置时间 -> -1 (不画)
+// 用四舍五入 (和彩色段的格数同一种取整): 用量正好跟上时间时, 彩色段的最后一格正好挨着刻度
+function tickCell(p: Pace | undefined, bw: number): number {
+  if (p?.elapsedFrac === undefined || bw <= 0) return -1
+  return Math.min(bw - 1, Math.max(0, Math.round(p.elapsedFrac * bw)))
 }
 
 function addTok(t: Tok, u: any) {
@@ -462,36 +475,27 @@ function bodyColor(pct: number): number {
   return pct >= 80 ? COL.hot : COL.body
 }
 
-// 子代理小螃蟹 (3 列宽, 画在右侧 x 12-14): C = 钳子和身体, E = 眼睛, L = 腿, . = 空; 两帧交替 = 腿在走
-// 1-2 只用 3x3 (钳子 / 身体 + 眼睛 / 腿), 3 只时放不下, 改 3x2 (身体 + 眼睛 / 腿)
-const KID_TALL = [
-  ['C.C', 'CEC', 'L.L'],
-  ['C.C', 'CEC', '.L.'],
-]
-const KID_FLAT = [
-  ['CEC', 'L.L'],
-  ['CEC', '.L.'],
+// 子代理小螃蟹 (3 列宽 x 2 行高, 画在右下角 x 12-14): C = 身体, L = 腿, . = 空; 没有眼睛
+// 不管几个子代理都只画一只 (数量看状态格里的 "+N代理"); 两个姿势交替:
+//   蹲下 (y 4-5) 腿张开 L.L / 跳起 (y 3-4) 腿收拢 .L.
+// 每 KID_STEP 帧 (3 x 150ms = 0.45 秒) 才换一个姿势, 慢慢跳, 不抢大螃蟹的戏
+const KID_STEP = 3
+const KID = [
+  { y: 4, rows: ['CCC', 'L.L'] },
+  { y: 3, rows: ['CCC', '.L.'] },
 ]
 function stamp(p: Px, x0: number, y0: number, rows: string[]) {
   rows.forEach((row, dy) => {
     for (let dx = 0; dx < row.length; dx++) {
       const ch = row[dx]
-      const c = ch === 'C' ? COL.kid : ch === 'E' ? COL.kidEye : ch === 'L' ? COL.kidLeg : -1
+      const c = ch === 'C' ? COL.kid : ch === 'L' ? COL.kidLeg : -1
       if (c >= 0) put(p, x0 + dx, y0 + dy, c)
     }
   })
 }
-function drawKids(p: Px, n: number, f: number) {
-  const step = Math.floor(f / 2)
-  if (n === 1) {
-    // 一只: 一边走一边上下跳 (占 4 行里的 3 行)
-    stamp(p, 12, [2, 1, 2, 3][step % 4], KID_TALL[step % 2])
-  } else if (n === 2) {
-    stamp(p, 12, 0, KID_TALL[step % 2])
-    stamp(p, 12, 3, KID_TALL[(step + 1) % 2])
-  } else if (n >= 3) {
-    for (let i = 0; i < 3; i++) stamp(p, 12, i * 2, KID_FLAT[(step + i) % 2])
-  }
+function drawKid(p: Px, f: number) {
+  const k = KID[Math.floor(f / KID_STEP) % KID.length]
+  stamp(p, 12, k.y, k.rows)
 }
 
 function scenePx(s: Scene): Px {
@@ -625,8 +629,8 @@ function scenePx(s: Scene): Px {
       if (d < 2) put(p, 1, d, COL.sweat)
     }
   }
-  // 子代理小螃蟹最后画: 盖在任何道具 / 闪光 / 泡泡上面
-  if (nKids) drawKids(p, nKids, f)
+  // 子代理小螃蟹最后画: 盖在任何道具 / 闪光 / 泡泡上面; 几个子代理都只画一只
+  if (nKids) drawKid(p, f)
   return p
 }
 
@@ -657,13 +661,8 @@ function miniPx(s: Scene): Px {
   for (const x of legs) put(p, x, 1, body)
   // 冒汗: 左下角一颗蓝色汗滴闪
   if (!s.celebrating && (s.pct >= 80 || md === 'sweat' || md === 'panic') && t % 4 < 2) put(p, 0, 1, COL.sweat)
-  // 子代理: 第 8 列; 1 只 = 一个点上下跳, 2 只以上 = 两格都亮, 3 只再加闪
-  if (nKids === 1) put(p, 7, t % 2, COL.kid)
-  else if (nKids >= 2) {
-    const hi = nKids >= 3 && f % 4 < 2 ? COL.kidEye : COL.kid
-    put(p, 7, 0, t % 2 ? COL.kid : hi)
-    put(p, 7, 1, t % 2 ? hi : COL.kidLeg)
-  }
+  // 子代理: 第 8 列一个点, 和大面板的小螃蟹同一个节奏慢慢上下跳; 几个子代理都一样, 不闪
+  if (nKids) put(p, 7, Math.floor(f / KID_STEP) % 2 ? 0 : 1, COL.kid)
   return p
 }
 
@@ -702,18 +701,26 @@ function label(els: any, key: string, text: string, width: number, onPress?: () 
       ]
 }
 
-function barParts(els: any, key: string, pct: number | undefined, width: number, shimmerAt: number, pulse: number): any[] {
+// tickAt: 时间刻度画在第几格 (-1 = 不画); 那一格的 ━ 换成亮色 │, 条的总宽度不变
+function barParts(els: any, key: string, pct: number | undefined, width: number, shimmerAt: number, pulse: number, tickAt = -1): any[] {
   const { Text } = els
   const p = pct === undefined ? 0 : Math.max(0, Math.min(100, pct)) / 100
   // 只用整格: 半格字符在终端里会留一道缝 (实测)
   const full = p > 0 ? Math.max(1, Math.round(p * width)) : 0
+  // 窗口刚开始、用量只占 1 格时, 刻度和那格彩色都在第 0 格: 刻度让到第 1 格, 彩色照样看得见
+  const tick = tickAt === 0 && full === 1 && width > 1 ? 1 : tickAt
   const cells: any[] = []
   for (let i = 0; i < width; i++) {
     const lit = i < full
-    const ch = '━'
+    let ch = '━'
     let col = lit ? heat(i / Math.max(1, width - 1)) : TRACK
     if (lit && pulse > 0) col = mix(col, 0xffffff, pulse)
     if (lit && Math.abs(i - shimmerAt) < 1) col = mix(col, 0xffffff, 0.6)
+    // 刻度最后定: 不跟着呼吸 / 流光变色, 彩色段和暗色段里都一样亮
+    if (i === tick) {
+      ch = '│'
+      col = TICK
+    }
     cells.push(
       <Text key={key + '-c' + i} color={hex(col)}>
         {ch}
@@ -738,6 +745,7 @@ type MeterOpts = {
   extraParts?: any[] // 自己画附加那段 (调用方保证正好 1 + extraW 列)
   shimmerAt: number
   pulse: number
+  tickAt?: number // 时间刻度在第几格 (tickCell 算; 不给 = 不画)
 }
 function meter(els: any, o: MeterOpts): any[] {
   const { Text } = els
@@ -746,7 +754,7 @@ function meter(els: any, o: MeterOpts): any[] {
   const pctColor = o.pctColor ?? (o.pct === undefined ? DIM : hex(heat(Math.min(100, o.pct) / 100)))
   const parts = [
     ...label(els, o.labelKey ?? 'btn-' + o.key, o.label, o.labelW, o.onPress),
-    ...barParts(els, o.key, shownPct, o.bw, o.shimmerAt, o.pulse),
+    ...barParts(els, o.key, shownPct, o.bw, o.shimmerAt, o.pulse, o.tickAt ?? -1),
     <Text key={o.key + '-pct'} color={pctColor} bold>
       {' ' + padL(pctText, 4)}
     </Text>,
@@ -1251,11 +1259,11 @@ const DESKTOP_PX_PER_COL = 7.35
 async function buildDesktop($: any, els: any, cols: number, working: boolean) {
   const { Box, Svg } = els
   const s = await snapshot($, working)
-  // 会在重置前用完 -> "约 40m 后用完" (红色), 否则 "1h20m 后重置"
+  // 会在重置前用完 -> "40m 用完" (红色), 否则只写重置倒计时 "1h20m"; tick = 窗口已过比例 (条上的时间刻度)
   const limitMeter = (l: Limit | undefined, p: Pace | undefined): DashData['five'] =>
     p?.willRunOut && p.runOutIn !== undefined
-      ? { pct: l?.percentUsed, extra: '约 ' + durShort(p.runOutIn) + ' 后用完', warn: true }
-      : { pct: l?.percentUsed, extra: l?.resetsAt ? durShort(Date.parse(l.resetsAt) - s.now) + ' 后重置' : '' }
+      ? { pct: l?.percentUsed, extra: durShort(p.runOutIn) + ' 用完', warn: true, tick: p.elapsedFrac }
+      : { pct: l?.percentUsed, extra: p?.resetIn !== undefined ? durShort(p.resetIn) : '', tick: p?.elapsedFrac }
   const ag = agentsNow ? `  +${agentsNow} 个子代理` : ''
   // 客户端只显示到分钟: 每秒变一次会让图片每秒重换一次
   const ran = s.now - turnStartedAt
@@ -1410,19 +1418,20 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
           </Text>,
         ]
     // 精简版没有附加文字那段: 会用完时百分比改成红色; 上下文 >=75% 时 "上下文" 标签换成 [压缩] (同样 6 列宽)
+    // 5小时 / 本周 的条上照样画时间刻度
     const m = (key: string, lab: string, p: number | undefined, onPress: () => void, sh: number, pl: number, more: Partial<MeterOpts> = {}): Seg => {
       const o: MeterOpts = { key, label: lab, labelW: dw(lab), onPress, pct: p, bw, extra: '', extraW: 0, shimmerAt: sh, pulse: pl, ...more }
       return { key: 'seg-' + key, w: meterWidth(o), prio: 0, parts: meter(els, o) }
     }
-    const warnPct = (p?: Pace) => (p?.willRunOut ? { pctColor: WARN } : {})
+    const limOpts = (p?: Pace): Partial<MeterOpts> => ({ ...(p?.willRunOut ? { pctColor: WARN } : {}), tickAt: tickCell(p, bw) })
     const ctxSeg = showCompact
       ? m('ctx', '压缩', pct, onCompact, working ? frame % (bw + 6) : -9, 0, { labelW: dw('上下文'), labelKey: 'btn-compact' })
       : m('ctx', '上下文', pct, onContext, working ? frame % (bw + 6) : -9, 0)
     const segs: Seg[] = [
       { key: 'seg-crab', w: isTerm ? MINI_W : 9, prio: 0, parts: crab },
       { ...ctxSeg, prio: 1 },
-      { ...m('h5', '5小时', five?.percentUsed, onUsage, -9, pulse(five), warnPct(p5)), prio: 2 },
-      { ...m('wk', '本周', week?.percentUsed, onUsage, -9, pulse(week), warnPct(pw)), prio: 3 },
+      { ...m('h5', '5小时', five?.percentUsed, onUsage, -9, pulse(five), limOpts(p5)), prio: 2 },
+      { ...m('wk', '本周', week?.percentUsed, onUsage, -9, pulse(week), limOpts(pw)), prio: 3 },
       {
         key: 'seg-model',
         w: dw(model) + 1 + 5 + 1 + Math.max(2, dw(effort)),
@@ -1473,8 +1482,35 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
   }
   // 用量条吃掉这一列剩下的宽度, 第三列的条正好撑到右边距
   bw = Math.max(3, Math.min(60, bw))
-  const x5 = limitExtra(p5, extraW)
-  const xw = limitExtra(pw, extraW)
+  // 5小时 / 本周 的附加那段 (limW 列) 和条长 (limBw):
+  //   完整版: 三格在不同列, 附加只放 "1h54m" / "40m用完", 7 列就够, 省下的给条;
+  //           上下文退到 5 列时 (窄一点的完整版) 三格都用 5 列, 条一样长, 不比旧版短 (会用完时只写红色倒计时)
+  //   中等版: 三根条在同一列上下叠着, 条长和附加宽度必须和上下文那根一样, 百分比才竖着对齐
+  let limW = extraW
+  let limBw = bw
+  if (nCols === 3 && extraW === 11) {
+    limW = 7
+    limBw = Math.max(3, Math.min(60, inner - 5 - 1 - limW))
+  }
+  const x5 = limitExtra(p5, limW)
+  const xw = limitExtra(pw, limW)
+  // 会用完: 百分比和附加文字都变红 (加粗)
+  const limMeter = (key: string, lab: string, l: Limit | undefined, p: Pace | undefined, x: { text: string; warn: boolean }) =>
+    meter(els, {
+      key,
+      label: lab,
+      labelW: LABEL_W,
+      onPress: onUsage,
+      pct: l?.percentUsed,
+      pctColor: x.warn ? WARN : undefined,
+      bw: limBw,
+      extra: x.text,
+      extraW: limW,
+      extraColor: x.warn ? WARN : undefined,
+      shimmerAt: -9,
+      pulse: pulse(l),
+      tickAt: tickCell(p, limBw),
+    })
 
   // 第 1 行
   // 项目名优先完整显示, 分支名只用剩下的位置 (不够 4 格就不显示)
@@ -1524,8 +1560,8 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
       shimmerAt: working ? (frame % (bw + 8)) - 2 : -9,
       pulse: 0,
     }),
-    meter(els, { key: 'h5', label: '5小时', labelW: LABEL_W, onPress: onUsage, pct: five?.percentUsed, bw, extra: x5.text, extraW, extraColor: x5.warn ? WARN : undefined, shimmerAt: -9, pulse: pulse(five) }),
-    meter(els, { key: 'wk', label: '本周', labelW: LABEL_W, onPress: onUsage, pct: week?.percentUsed, bw, extra: xw.text, extraW, extraColor: xw.warn ? WARN : undefined, shimmerAt: -9, pulse: pulse(week) }),
+    limMeter('h5', '5小时', five, p5, x5),
+    limMeter('wk', '本周', week, pw, xw),
   ]
 
   // 第 3 行

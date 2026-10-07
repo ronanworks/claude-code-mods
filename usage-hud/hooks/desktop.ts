@@ -8,8 +8,9 @@ export type CrabKind = 'think' | 'read' | 'edit' | 'bash' | 'web' | 'agent' | 'o
 export type CrabMood = 'chill' | 'normal' | 'sweat' | 'panic'
 export type CrabState = { mode: CrabMode; kind: CrabKind; heat: 'ok' | 'hot' | 'crit'; agents: number; mood?: CrabMood }
 
-// warn: 预计重置前用完, 说明文字画成红色
-export type Meter = { pct?: number; extra: string; warn?: boolean }
+// warn: 预计重置前用完, 百分比和说明文字画成红色
+// tick: 窗口已过的比例 (0-1), 条上画一根亮色细竖线 (时间刻度); 不给就不画 (上下文那根没有)
+export type Meter = { pct?: number; extra: string; warn?: boolean; tick?: number }
 export type DashData = {
   model: string
   effort: string
@@ -48,6 +49,7 @@ const C = {
   kid: '#f2a07b', // 小螃蟹浅一号, 和大螃蟹分得开
   kidLeg: '#a4553d',
   warn: '#f87171',
+  tick: '#e5e5e5', // 时间刻度: 彩色段和暗色轨道上都看得清
 }
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const EFFORT_COLOR: Record<string, string> = { low: '#a1a1aa', medium: '#60a5fa', high: '#fbbf24', xhigh: '#fb923c', max: '#f87171' }
@@ -270,9 +272,9 @@ function flow(x: number, y: number, runs: Run[], size = 13, anchor: 'start' | 'e
 }
 const SEP: Run = ['  ·  ', T.sep]
 
-// "2h12m 后重置" -> "2h", "1d18h 后重置" -> "1d", "240k / 1.0M" -> "240k", "约 40m 后用完" -> "40m"
+// "2h12m" -> "2h", "1d18h" -> "1d", "240k / 1.0M" -> "240k", "40m 用完" -> "40m" (旧写法 "约 40m 后用完" / "2h12m 后重置" 也认)
 function shortExtra(s: string): string {
-  const t = s.replace(/\s*后(重置|用完)$/, '').replace(/^约\s*/, '').split('/')[0].trim()
+  const t = s.replace(/\s*后?(重置|用完)$/, '').replace(/^约\s*/, '').split('/')[0].trim()
   const hm = t.match(/^(\d+)h\d+m$/)
   if (hm) return hm[1] + 'h'
   const dh = t.match(/^(\d+)d\d+h$/)
@@ -300,9 +302,15 @@ function meterSvg(id: string, x0: number, y: number, cw: number, label: string, 
       `<rect x="${bx.toFixed(1)}" y="${y - 6}" width="${Math.max(5, bw * p).toFixed(1)}" height="5" rx="2.5" fill="url(#g${id})"/>`,
     )
   }
-  out.push(
-    flow(x0 + cw, y, [[pctText, m.pct === undefined ? T.muted : heat(p), 700, 12.5], extra ? ['  ' + extra, m.warn ? C.warn : T.muted, m.warn ? 700 : 0, 11] : null], 12.5, 'end'),
-  )
+  // 时间刻度: 1.5 像素宽的亮色细竖线, 上下各比条高出 1.5 像素, 夹在条的两端之内
+  if (m.tick !== undefined && isFinite(m.tick)) {
+    const tw = 1.5
+    const tx = Math.max(bx, Math.min(bx + bw - tw, bx + bw * Math.max(0, Math.min(1, m.tick)) - tw / 2))
+    out.push(`<rect class="tick" x="${tx.toFixed(1)}" y="${y - 7.5}" width="${tw}" height="8" fill="${C.tick}"/>`)
+  }
+  // 会用完: 百分比和说明都画成红色
+  const pctFill = m.pct === undefined ? T.muted : m.warn ? C.warn : heat(p)
+  out.push(flow(x0 + cw, y, [[pctText, pctFill, 700, 12.5], extra ? ['  ' + extra, m.warn ? C.warn : T.muted, m.warn ? 700 : 0, 11] : null], 12.5, 'end'))
   return out.join('')
 }
 

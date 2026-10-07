@@ -89,6 +89,8 @@ The panel is the crab plus a 3 × 3 grid whose labels line up in columns:
 | Row 2 | Context usage | 5-hour usage | Weekly usage |
 | Row 3 | Status | Most-used tools | Total tokens + output (out) |
 
+The 5-hour and weekly bars each carry a bright `│` tick that marks how much of the window has passed, and a short countdown to the reset follows the bar, such as `1h54m`. When the colored part runs past the tick, you are using quota faster than the clock.
+
 The crab follows what Claude is doing:
 
 | Claude is | The crab |
@@ -98,7 +100,7 @@ The crab follows what Claude is doing:
 | Writing or editing a file | Taps with its right claw as the page fills with text |
 | Running a command | Types with both claws, terminal cursor blinking |
 | On the web | A spinning globe |
-| Running subagents | One to three baby crabs run and hop beside it |
+| Running subagents | A baby crab hops slowly beside it; the status cell says how many ("+3 agents") |
 | Done with a turn | Jumps with claws up, gold sparkles |
 | Idle / idle for 5 minutes | Blinks and looks around / sleeps, blowing bubbles |
 | At ≥ 80% context | Turns red and sweats; at ≥ 95% flashes red |
@@ -108,7 +110,7 @@ The crab follows what Claude is doing:
 | Quota | The crab | The panel |
 |---|---|---|
 | Using less than the clock (pace < 0.8) | Wears sunglasses, relaxed | Normal |
-| Clearly ahead of pace, on track to run out before the reset | Sweats | The text after the bar turns red: "about 40m to empty" |
+| Clearly ahead of pace, on track to run out before the reset | Sweats | The percentage and the countdown turn red: `40m用完` (empty in 40m) |
 | Runs out within 30 minutes, or ≥ 95% used | Panics with claws up and a "!" | Same as above |
 
 **More practical touches**
