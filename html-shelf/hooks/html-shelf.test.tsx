@@ -529,3 +529,164 @@ test('没标语言、但只有一行命令的代码块也有 Insert；命令已�
   expect(bodies.length).toBe(3)
   await ui.unmount()
 })
+
+// ---- v0.7 行内命令 ----
+
+// 画出来的树按顺序摊平: Markdown → 'md:文字', 卡片 → 它的 key (inline-1 / code-1)
+function sequence(node: any, out: string[] = []): string[] {
+  if (!node || typeof node !== 'object') return out
+  const key = node.key ?? node.props?.key
+  if (node.type === 'Markdown') out.push('md:' + node.props?.text)
+  if (node.type === 'Box' && /^(?:inline|code)-\d+$/.test(key ?? '')) {
+    out.push(key)
+    return out
+  }
+  for (const c of node.children ?? []) sequence(c, out)
+  return out
+}
+const inlineCards = async (ui: any) => (await ui.findAll({ type: 'Box' })).filter((b: any) => /^inline-\d+$/.test(b.key ?? ''))
+
+test('列表项里的行内命令: 卡片在整个列表项 (含续行) 后面、按列表缩进; Insert 只带一个 !, Copy 复制原文', async ($, on) => {
+  const log = mocks(on)
+  const PS = '! powershell -ExecutionPolicy Bypass -File scripts\\a\\b\\install_autostart.ps1'
+  const MSG = [
+    '还差两步：',
+    '',
+    '- 开机自启：仍需你本人运行一次 `' + PS + '`。',
+    '  这一步要管理员权限。',
+    '- `python -m unittest -v scripts/x/test_server.py`',
+    '- 完成后告诉我',
+  ].join('\n')
+  const ui = await mount($, 'terminal', 'm30', MSG)
+  expect(sequence(await ui.drawn())).toEqual([
+    'md:还差两步：\n\n- 开机自启：仍需你本人运行一次 `' + PS + '`。\n  这一步要管理员权限。',
+    'inline-1',
+    'md:- `python -m unittest -v scripts/x/test_server.py`',
+    'inline-2',
+    'md:- 完成后告诉我',
+  ])
+  const cards = await inlineCards(ui)
+  expect(cards.map((b: any) => b.props.marginLeft)).toEqual([2, 2])
+  expect((await ui.findAll({ type: 'Code' })).map((c: any) => [c.text, c.props.language])).toEqual([
+    [PS, 'powershell'],
+    ['python -m unittest -v scripts/x/test_server.py', 'bash'],
+  ])
+  const labels = (await ui.findAll({ type: 'Button' })).filter((b: any) => /^inline-/.test(b.key ?? '')).map((b: any) => b.props.label)
+  expect(labels).toEqual(['Insert', 'Copy', 'Insert', 'Copy'])
+  await ui.press({ key: 'inline-fill-1' })
+  await ui.press({ key: 'inline-copy-1' })
+  await ui.press({ key: 'inline-fill-2' })
+  expect(log.filled).toEqual(['!powershell -ExecutionPolicy Bypass -File scripts\\a\\b\\install_autostart.ps1', '!python -m unittest -v scripts/x/test_server.py'])
+  expect(log.copied).toEqual([PS])
+  // 猜成 bash 的命令 (python) 两种 shell 都能跑: 不提醒 shell 对不上
+  expect(log.toasts.filter(t => t.includes('已填入')).every(t => !t.includes('注意'))).toBe(true)
+  await ui.unmount()
+  // 只在终端: 客户端照旧交给引擎
+  const d = await mount($, 'desktop', 'm30d', MSG)
+  expect(await d.findAll({ type: 'Button' })).toHaveLength(0)
+  expect(await d.find({ type: 'Text', text: 'engine-base' })).toBeDefined()
+  await d.unmount()
+})
+
+test('段落里的行内命令: 卡片在段落结束处；单个词、路径、参数片段、链接文字里的不算', async ($, on) => {
+  mocks(on)
+  const MSG = [
+    '改完了。验证方法：运行 `python -m unittest -v x.py`，',
+    '应该看到 OK。',
+    '',
+    '另外 `git`、`scripts/foo.py`、`-ExecutionPolicy`、`python 3.12` 只是提一下，[`npm test`](https://example.com/a) 是链接。',
+  ].join('\n')
+  const ui = await mount($, 'terminal', 'm31', MSG)
+  expect(sequence(await ui.drawn())).toEqual([
+    'md:改完了。验证方法：运行 `python -m unittest -v x.py`，\n应该看到 OK。',
+    'inline-1',
+    'md:另外 `git`、`scripts/foo.py`、`-ExecutionPolicy`、`python 3.12` 只是提一下，[`npm test`](https://example.com/a) 是链接。',
+  ])
+  await ui.unmount()
+  // 只有不算命令的: 不接手, 和以前一样交给引擎; 没闭合的反引号 (流式中) 也不算
+  const long = '`git commit -m "' + 'a'.repeat(300) + '"`'
+  const t = await mount($, 'terminal', 'm31b', '提到 `git`、`scripts/foo.py`、`-ExecutionPolicy`、`!=`，' + long + '，还在写 `npm te')
+  expect(await inlineCards(t)).toHaveLength(0)
+  expect(await t.find({ type: 'Text', text: 'engine-base' })).toBeDefined()
+  await t.unmount()
+})
+
+test('代码块里写过的命令不补；同一条命令写两次只补一张；没闭合的代码块里的不扫', async ($, on) => {
+  mocks(on)
+  const MSG = [
+    '先跑 `npm test`，再看 `git status`。',
+    '',
+    '```bash',
+    'npm test',
+    '```',
+    '',
+    '如果失败，再跑一次 `! git status`。',
+  ].join('\n')
+  const ui = await mount($, 'terminal', 'm32', MSG)
+  expect(sequence(await ui.drawn())).toEqual(['md:先跑 `npm test`，再看 `git status`。', 'inline-1', 'code-1', 'md:如果失败，再跑一次 `! git status`。'])
+  expect((await ui.findAll({ type: 'Code' })).map((c: any) => c.text)).toEqual(['git status', 'npm test'])
+  await ui.unmount()
+  // 流式中: ``` 还没闭合, 里面的行内代码不算; 正文里的命令和没闭合的块里写的相同也不补
+  const s = await mount($, 'terminal', 'm32b', '先跑 `npm test`：\n\n```md\nnpm test\n运行 `git status --short`')
+  expect(await inlineCards(s)).toHaveLength(0)
+  await s.unmount()
+  // 列表项里缩进的 ``` 还没闭合: 整个列表项先不补卡片, 也不切开 (照旧交给引擎, 代码保持列表缩进)
+  const s2 = await mount($, 'terminal', 'm32c', '1. 运行 `uv sync`：\n   ```bash\n   uv run x')
+  expect(await inlineCards(s2)).toHaveLength(0)
+  expect(await s2.find({ type: 'Text', text: 'engine-base' })).toBeDefined()
+  await s2.unmount()
+})
+
+test('表格里的行内命令: 卡片在整张表格后面', async ($, on) => {
+  mocks(on)
+  const MSG = [
+    '步骤：',
+    '',
+    '| 步骤 | 命令 |',
+    '|---|---|',
+    '| 装依赖 | `pip install -r requirements.txt` |',
+    '| 列文件 | `Get-ChildItem .\\docs \\| Select-Object -First 3` |',
+    '',
+    '表格后面的话。',
+  ].join('\n')
+  const ui = await mount($, 'terminal', 'm33', MSG)
+  expect(sequence(await ui.drawn())).toEqual([
+    'md:步骤：\n\n| 步骤 | 命令 |\n|---|---|\n| 装依赖 | `pip install -r requirements.txt` |\n| 列文件 | `Get-ChildItem .\\docs \\| Select-Object -First 3` |',
+    'inline-1',
+    'inline-2',
+    'md:表格后面的话。',
+  ])
+  // 表格里转义的 \| 复制出来是 |
+  expect((await ui.findAll({ type: 'Code' })).map((c: any) => [c.text, c.props.language])).toEqual([
+    ['pip install -r requirements.txt', 'bash'],
+    ['Get-ChildItem .\\docs | Select-Object -First 3', 'powershell'],
+  ])
+  expect((await inlineCards(ui)).map((b: any) => b.props.marginLeft)).toEqual([0, 0])
+  await ui.unmount()
+})
+
+test('一条回复最多补 6 张；有序列表切开后序号不变；文件路径链接照常可点', async ($, on) => {
+  const log = mocks(on)
+  const cmds = ['npm install', 'npm test', 'npm run build', 'git add .', 'git commit -m "x"', 'git push', 'gh pr create', 'uv sync']
+  const MSG = ['报告在 `docs/report.html`。', '', ...cmds.map(c => '1. 运行 `' + c + '`')].join('\n')
+  const ui = await mount($, 'terminal', 'm34', MSG)
+  expect(await inlineCards(ui)).toHaveLength(6)
+  const seq = sequence(await ui.drawn())
+  // 全写 "1." 的列表: 切开后每段第一项写回它本来显示的序号 (引擎按 第一项的数 + 第几项 编号)
+  expect(seq.filter(s => s.startsWith('md:')).map(s => s.slice(3).split('\n').pop())).toEqual([
+    '1. 运行 `npm install`',
+    '2. 运行 `npm test`',
+    '3. 运行 `npm run build`',
+    '4. 运行 `git add .`',
+    '5. 运行 `git commit -m "x"`',
+    '6. 运行 `git push`',
+    '1. 运行 `uv sync`',
+  ])
+  expect(seq[seq.length - 1]).toBe('md:7. 运行 `gh pr create`\n1. 运行 `uv sync`')
+  // 路径链接: 第一段照常换成可点击的链接
+  const md: any = await ui.find({ key: 'html-links-m34-0' } as any)
+  expect(md.text).toContain('[`docs/report.html`](file:///D:/proj/docs/report.html)')
+  await ui.press({ key: 'html-links-m34-0', link: { href: 'file:///D:/proj/docs/report.html' } })
+  expect(log.opened).toEqual([['explorer.exe', 'D:\\proj\\docs\\report.html']])
+  await ui.unmount()
+})

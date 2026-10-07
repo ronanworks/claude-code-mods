@@ -24,7 +24,7 @@ Claude Code [mods](https://code.claude.com/docs/en/plugins/mods/overview) are pl
 | Mod | What it does |
 |---|---|
 | **usage-hud** | A usage panel under the prompt. A pixel crab acts out the tool Claude is using, and its mood follows how fast you burn your quota. Model and effort, project and branch, session time and cost, context / 5-hour / weekly usage and tokens, all at a glance. A second crab walks above the prompt with your subagents |
-| **html-shelf** | File paths in Claude's replies (HTML, PDF, images, video, folders …) open with one click. Code blocks are drawn as cards you can copy or drop into the prompt |
+| **html-shelf** | File paths in Claude's replies (HTML, PDF, images, video, folders …) open with one click. Code blocks, and commands written inline, are drawn as cards you can copy or drop into the prompt |
 
 > The UI text is in Chinese. The GIFs on this page show exactly what you get.
 
@@ -159,6 +159,7 @@ In the desktop app, the panel becomes a dedicated SVG card (crab + dashboard) ab
 - **Code cards**: each code block is drawn as a card, with the language on the left of the title bar and buttons on the right.
   - "Copy": copies the exact text with no trailing newline, so pasting into a shell doesn't run it.
   - "Insert": single-line shell commands get this extra button, including an untagged one-line command such as one that starts with `!`. It puts the command into the prompt prefixed with `!`, and it runs on your machine only when you press Enter. A draft you're still typing is never overwritten.
+  - Commands written inline in the text (inside backticks, such as `` `python -m unittest -v x.py` ``) get a card too, placed after that paragraph, list item or table. Only clear commands count: ones that start with `!`, or a known program (python, powershell, git, npm, claude …) with arguments. The same command gets one card, at most 6 per reply.
   - Hover the card and the title bar lights up while the buttons turn orange; after a click you see "Copied ✓".
   - Card colors come from Claude Code's current theme, so they suit both dark and light themes.
 - **Copy the whole reply**: hover a reply and "Copy all" appears at its top right. It copies that block's text with common indentation removed.

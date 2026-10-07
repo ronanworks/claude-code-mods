@@ -1,17 +1,17 @@
 {
   "name": "claude-code-mods",
-  "description": "Claude Code mods by Ronan: usage-hud (animated pixel-crab usage panel) and html-shelf (clickable HTML links and copyable code cards in the terminal)",
+  "description": "Claude Code mods by Ronan: usage-hud (animated pixel-crab usage panel) and html-shelf (one-click file links and copyable code cards in the terminal)",
   "owner": { "name": "Ronan" },
   "plugins": [
     {
       "name": "usage-hud",
       "source": "./usage-hud",
-      "description": "输入框下方的用量面板：会按工具做动作的像素小螃蟹 + 模型/项目/用量/状态网格"
+      "description": "Animated usage panel under the prompt: a moody pixel crab, a model/project/usage grid with quota-pace warnings, and a crab walkway above the prompt"
     },
     {
       "name": "html-shelf",
       "source": "./html-shelf",
-      "description": "终端里 .html 路径单击用浏览器打开；代码块画成带底色的卡片，一键复制"
+      "description": "Terminal replies made handier: one-click file links, code cards with Copy / Insert (inline commands too), Copy all, and Open on tool rows"
     }
   ]
 }

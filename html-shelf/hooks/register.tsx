@@ -10,6 +10,8 @@ import type { Register } from 'claude-code'
 //      各用主题里的一种底色, 跟着深色/浅色主题走; 鼠标移上去标题栏变亮、按钮变橙;
 //      复制 = 代码原文进剪贴板 (末尾不带换行), 之后 1.8 秒显示绿色"已复制 ✓";
 //      填入 = 只有一条命令的 shell 代码块, 以 ! 开头填进输入框, 按回车才运行
+//      文字里 `反引号` 写的命令 (以 ! 开头, 或 python / git / npm / Get-ChildItem … 带参数) 也补一张同样的卡片,
+//      放在所在段落 / 列表项 / 表格的后面, 原文一字不改; 同一条命令只补一次, 代码块里写过的不补, 一条回复最多 6 张
 //   3. 终端里鼠标停在 Claude 的回复上, 右上角出现"复制全文" (复制这段回复的 markdown 原文)
 //   4. 终端里 Write / Edit 写完的文件, 工具行后面有"打开"
 //   5. /open       打开最近一次提到或写出的文件
@@ -72,6 +74,28 @@ const SHELL_NAME: Record<ShellKind, string> = { bash: 'bash', powershell: 'Power
 // 没标语言的代码块: 只有一行、而且看起来像命令才当 shell 命令 (以 ! / $ / PS> 开头, 或第一个词是常见命令)
 const LOOKS_LIKE_CMD =
   /^(?:!|\$\s|PS [^>]*>\s|(?:powershell|pwsh|cmd|claude|git|gh|npm|npx|pnpm|yarn|bun|node|deno|python3?|py|pip3?|uv|conda|cd|ls|dir|mkdir|winget|choco|scoop|brew|apt|sudo|wsl|ssh|scp|curl|wget|docker|code|start|explorer|open|xdg-open|ffmpeg|make|cargo|go|dotnet|java|(?:Get|Set|New|Start|Stop|Copy|Move|Invoke|Test)-\w+)(?:\s|$))/i
+// 行内命令 (`反引号` 里写的命令): 以 ! 开头, 或者以这些程序开头并且后面带参数
+const INLINE_PROGRAMS = [
+  'python', 'python3', 'py', 'pip', 'pip3', 'uv', 'conda', 'node', 'npm', 'npx', 'pnpm', 'yarn', 'git', 'gh', 'claude',
+  'powershell', 'pwsh', 'cmd', 'bash', 'sh', 'wsl', 'docker', 'cargo', 'go', 'dotnet', 'winget', 'scoop', 'choco',
+  'curl', 'wget', 'ssh', 'scp',
+].join('|')
+// PowerShell 的 动词-名词 (Get-ChildItem …)
+const PS_VERBS = [
+  'Get', 'Set', 'New', 'Start', 'Stop', 'Restart', 'Invoke', 'Remove', 'Copy', 'Move', 'Rename', 'Test', 'Add', 'Clear',
+  'Install', 'Uninstall', 'Update', 'Import', 'Export', 'Select', 'Where', 'ForEach', 'Out', 'Write', 'Enable', 'Disable',
+  'Expand', 'Compress', 'Resolve', 'Join', 'Split', 'Measure', 'ConvertTo', 'ConvertFrom', 'Register', 'Unregister', 'Wait',
+].join('|')
+// 程序名 + 空格 + 参数 (参数不以 + = | & , ; : 开头, 免得把 `cmd + K` 这类快捷键当命令)
+const INLINE_CMD = new RegExp(
+  `^(?:(?:${INLINE_PROGRAMS})(?:\\.exe)?|(?:${PS_VERBS})-[A-Za-z]\\w*)\\s+(?![+=|&,;:])\\S`,
+  'i',
+)
+const PS_CMDLET = new RegExp(`(?:^|[|;]\\s*)(?:${PS_VERBS})-[A-Za-z]`, 'i')
+// 粗筛: 有没有可能写了行内命令 (反引号后面紧跟 ! / 程序名 / 动词-名词)
+const INLINE_HINT = new RegExp(`\`\\s*(?:!|(?:${INLINE_PROGRAMS})(?:\\.exe)?\\s|(?:${PS_VERBS})-\\w)`, 'i')
+const MAX_INLINE = 6 // 一条回复最多补 6 张行内命令卡片
+const MAX_INLINE_LEN = 300
 // 按钮文字 (英文, 和 GitHub 上的代码块一样); 宽度用来给"Copy all"让位
 const LABEL = { copy: 'Copy', copied: 'Copied ✓', insert: 'Insert', copyAll: 'Copy all', open: 'Open' }
 // 显示宽度: 中日韩字符算 2 格, 其余 1 格
@@ -504,6 +528,319 @@ function shellKindOf(p: { lang: string; code: string }): ShellKind | undefined {
   return lines.length === 1 && LOOKS_LIKE_CMD.test((lines[0] ?? '').trim()) ? 'any' : undefined
 }
 
+// ---- 行内命令 (v0.7): 文字里 `反引号` 写的命令, 在所在的块后面补一张卡片 ----
+
+// `内容` 像不像要用户运行的命令: 以 ! 开头 (! 后有空格, 或带参数, 或是已知程序), 或已知程序 + 参数;
+// 单个词、路径、参数片段 (-ExecutionPolicy)、版本号 (`python 3.12`)、超过 300 字的不算
+function inlineCommand(raw: string): string | undefined {
+  const s = raw.trim()
+  if (!s || s.length > MAX_INLINE_LEN || /[\r\n]/.test(s)) return undefined
+  if (s.startsWith('!')) {
+    const rest = s.replace(/^!\s*/, '')
+    if (!/^[A-Za-z.~\\/]/.test(rest)) return undefined // `!=` `!!` `!0`
+    return /^!\s/.test(s) || /\s/.test(rest) || INLINE_CMD.test(rest + ' x') ? s : undefined
+  }
+  if (!INLINE_CMD.test(s)) return undefined
+  const args = s.replace(/^\S+\s+/, '')
+  if (/^v?\d+(?:\.\d+)*$/.test(args)) return undefined
+  return s
+}
+
+// 同一条命令的比较键: 去掉开头的 ! / $ / PS> 提示符, 空白合并
+function cmdKey(s: string): string {
+  return s
+    .trim()
+    .replace(/^(?:PS [^>]*>|[$%>])\s+/, '')
+    .replace(/^!\s*/, '')
+    .replace(/\s+/g, ' ')
+}
+
+// 行内命令卡片的语言: powershell / pwsh、动词-名词、带反斜杠的 Windows 路径 → powershell, 其余 bash
+function inlineLang(cmd: string): 'powershell' | 'bash' {
+  const c = cmd.replace(/^!\s*/, '')
+  if (/^(?:powershell|pwsh)(?:\.exe)?(?:\s|$)/i.test(c) || PS_CMDLET.test(c)) return 'powershell'
+  if (/(?:^|[\s"'=])(?:[A-Za-z]:\\|\.{1,2}\\|[\w.-]+\\[\w.-])/.test(c)) return 'powershell'
+  return 'bash'
+}
+
+// 一段文字里 CommonMark 的行内代码: 开头几个反引号, 就找后面同样个数的反引号收尾; 找不到 = 不是代码 (流式还没写完的也一样)
+function codeSpans(s: string): { start: number; end: number; body: string }[] {
+  const out: { start: number; end: number; body: string }[] = []
+  const runEnd = (k: number) => {
+    while (s[k] === '`') k++
+    return k
+  }
+  let i = 0
+  while (i < s.length) {
+    if (s[i] === '\\' && s[i + 1] === '`') {
+      i += 2
+      continue
+    }
+    if (s[i] !== '`') {
+      i++
+      continue
+    }
+    const open = runEnd(i)
+    const n = open - i
+    let k = open
+    let close = -1
+    while (k < s.length) {
+      if (s[k] !== '`') {
+        k++
+        continue
+      }
+      const e = runEnd(k)
+      if (e - k === n) {
+        close = k
+        break
+      }
+      k = e
+    }
+    if (close < 0) {
+      i = open
+      continue
+    }
+    out.push({ start: i, end: close + n, body: s.slice(open, close) })
+    i = close + n
+  }
+  return out
+}
+
+// 文字段里的"顶层块": 卡片只放在块的末尾 (段落、整个列表项含续行和子列表、整张表格);
+// 只在顶层切, 下一段 Markdown 就不会以缩进开头被当成代码; 没闭合的 ``` (流式) 到结尾整个算一块, 不扫;
+// 列表项里缩进的 ``` 还没闭合时, 整个列表项先不补卡片 (闭合后它成了代码块, 卡片再出现在列表项后面)
+type Unit = {
+  start: number
+  end: number // 不含
+  indent: number // 卡片的左缩进: 列表项 = 内容缩进, 其余 0
+  scan: boolean
+  table: boolean
+  fenceAt?: number // 没闭合的 ``` 在第几行
+  item?: { ordered: boolean; mark: string; num: number; expect: number }
+}
+const LIST_ITEM = /^( {0,3})([-*+]|\d{1,9}[.)])( +|$)/
+const isBlank = (l?: string) => !l || !l.trim()
+const indentOf = (l: string) => /^ */.exec(l)?.[0].length ?? 0
+const isFenceOpen = (l: string) => {
+  const m = FENCE.exec(l)
+  return !!m && !(m[2]?.[0] === '`' && (m[3] ?? '').includes('`'))
+}
+const isHeading = (l: string) => /^ {0,3}#{1,6}(?:\s|$)/.test(l)
+const isQuote = (l: string) => /^ {0,3}>/.test(l)
+const isRule = (l: string) => /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(l)
+const isTableDelim = (l?: string) => !!l && /\|/.test(l) && /^ {0,3}\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/.test(l)
+// 能打断段落的行 (不认 --- / ===: 它们会把上一行变成标题, 切开就变样)
+const breaksPara = (l: string) => isFenceOpen(l) || isHeading(l) || isQuote(l) || /^ {0,3}(?:[-*+]|1[.)]) +\S/.test(l)
+
+function proseUnits(lines: string[]): Unit[] {
+  const units: Unit[] = []
+  let list: { ordered: boolean; mark: string; start: number; count: number } | undefined
+  let i = 0
+  while (i < lines.length) {
+    const l = lines[i] ?? ''
+    if (isBlank(l)) {
+      i++
+      continue
+    }
+    const base = { start: i, indent: 0, scan: true, table: false }
+    if (isFenceOpen(l)) {
+      units.push({ ...base, end: lines.length, scan: false, fenceAt: i })
+      break
+    }
+    const li = isRule(l) ? null : LIST_ITEM.exec(l)
+    if (li) {
+      const marker = li[2] ?? '-'
+      const spaces = (li[3] ?? '').length
+      const w = (li[1] ?? '').length + marker.length + (spaces >= 1 && spaces <= 4 ? spaces : 1)
+      let last = i
+      let fenceAt: number | undefined
+      let j = i + 1
+      while (j < lines.length) {
+        const s = lines[j] ?? ''
+        if (isBlank(s)) {
+          let k = j
+          while (k < lines.length && isBlank(lines[k])) k++
+          if (k < lines.length && indentOf(lines[k] ?? '') >= w) {
+            j = k
+            continue
+          }
+          break
+        }
+        if (isFenceOpen(s)) {
+          // 列表项里的 (缩进够) 没闭合代码块: 到结尾都属于这一项; 不够缩进的会结束列表, 另算一块
+          if (indentOf(s) >= w) {
+            fenceAt = j
+            last = lines.length - 1
+          }
+          break
+        }
+        if (indentOf(s) < w && (LIST_ITEM.test(s) || isHeading(s) || isQuote(s) || isRule(s))) break
+        last = j
+        j++
+      }
+      // 同一个列表里第几项: 有序列表显示的序号 = 第一项的数 + 第几项
+      const ordered = /\d/.test(marker)
+      const mark = ordered ? marker.slice(-1) : marker
+      const num = ordered ? parseInt(marker, 10) : 0
+      if (!list || list.ordered !== ordered || list.mark !== mark) list = { ordered, mark, start: num, count: 0 }
+      else list.count++
+      units.push({
+        ...base,
+        end: last + 1,
+        indent: w,
+        scan: fenceAt === undefined,
+        fenceAt,
+        item: { ordered, mark, num, expect: list.start + list.count },
+      })
+      i = last + 1
+      continue
+    }
+    list = undefined
+    if (indentOf(l) >= 4) {
+      // 缩进 4 格的代码: 不扫
+      let last = i
+      let j = i + 1
+      while (j < lines.length) {
+        const s = lines[j] ?? ''
+        if (isBlank(s)) {
+          let k = j
+          while (k < lines.length && isBlank(lines[k])) k++
+          if (k < lines.length && indentOf(lines[k] ?? '') >= 4) {
+            j = k
+            continue
+          }
+          break
+        }
+        if (indentOf(s) < 4) break
+        last = j
+        j++
+      }
+      units.push({ ...base, end: last + 1, scan: false })
+      i = last + 1
+      continue
+    }
+    if (isHeading(l) || isRule(l)) {
+      units.push({ ...base, end: i + 1 })
+      i++
+      continue
+    }
+    // 段落、表格、引用: 到空行为止 (表格从表头到最后一行; 引用的懒续行也算)
+    const table = /\|/.test(l) && isTableDelim(lines[i + 1])
+    const quote = isQuote(l)
+    let j = i + 1
+    while (j < lines.length) {
+      const s = lines[j] ?? ''
+      if (isBlank(s) || isFenceOpen(s) || isHeading(s)) break
+      if (!table && !quote && breaksPara(s)) break
+      j++
+    }
+    units.push({ ...base, end: j, table })
+    i = j
+  }
+  return units
+}
+
+type InlineCard = { cmd: string; key: string; lang: 'powershell' | 'bash'; kind: ShellKind }
+type ProsePlan = { lines: string[]; units: Unit[]; cards: Map<number, InlineCard[]> }
+
+// 一个块里的行内命令 (按出现顺序): 空行、列表标记、标题、引用处另起一段再配对反引号; 表格每行单独配对;
+// [文字](链接) 的文字里的不算
+function unitCommands(lines: string[], u: Unit): string[] {
+  const groups: string[][] = []
+  let cur: string[] = []
+  const flush = () => {
+    if (cur.length) groups.push(cur)
+    cur = []
+  }
+  for (let i = u.start; i < u.end; i++) {
+    const l = lines[i] ?? ''
+    if (isBlank(l) || u.table || /^\s*(?:[-*+]|\d{1,9}[.)])(?:\s|$)|^\s*#{1,6}\s|^\s*>/.test(l)) flush()
+    if (!isBlank(l)) cur.push(l)
+    if (u.table) flush()
+  }
+  flush()
+  const found: string[] = []
+  for (const g of groups) {
+    const text = g.join('\n')
+    const linkText: [number, number][] = []
+    for (const m of text.matchAll(new RegExp(MD_LINK.source, 'g'))) linkText.push([(m.index ?? 0) + 1, (m.index ?? 0) + 1 + (m[1] ?? '').length])
+    for (const sp of codeSpans(text)) {
+      if (linkText.some(([a, b]) => sp.start >= a && sp.end <= b)) continue
+      const body = u.table ? sp.body.replace(/\\\|/g, '|') : sp.body
+      const cmd = inlineCommand(body)
+      if (cmd) found.push(cmd)
+    }
+  }
+  return found
+}
+
+// 整条回复要补哪些行内命令卡片: 去掉重复的、去掉 fenced 代码块里已经写了的, 最多 MAX_INLINE 张
+function planInline(parts: Part[]): { plans: Map<number, ProsePlan>; total: number } {
+  const known = new Set<string>()
+  const addCode = (code: string, lang = '') => {
+    for (const line of code.split('\n')) if (line.trim()) known.add(cmdKey(line))
+    const one = oneCommand(code, shellKindOf({ lang, code }) ?? 'bash')
+    if (one) known.add(cmdKey(one))
+  }
+  const plans = new Map<number, ProsePlan>()
+  parts.forEach((p, i) => {
+    if (p.kind === 'code') {
+      addCode(p.code, p.lang)
+      return
+    }
+    const lines = p.text.split('\n')
+    const units = proseUnits(lines)
+    // 没闭合的 ``` (流式中) 里写的命令也算已经有了
+    for (const u of units) if (u.fenceAt !== undefined) addCode(lines.slice(u.fenceAt + 1, u.end).join('\n'))
+    plans.set(i, { lines, units, cards: new Map() })
+  })
+  const seen = new Set<string>()
+  let total = 0
+  for (const [, plan] of plans) {
+    plan.units.forEach((u, ui) => {
+      if (!u.scan) return
+      for (const cmd of unitCommands(plan.lines, u)) {
+        const k = cmdKey(cmd)
+        if (total >= MAX_INLINE || known.has(k) || seen.has(k)) continue
+        seen.add(k)
+        total++
+        const lang = inlineLang(cmd)
+        // 猜成 bash 的 (python / git / npm …) 两种 shell 都能跑: 填入时不提醒 shell 对不上
+        const card: InlineCard = { cmd, key: k, lang, kind: lang === 'powershell' ? 'powershell' : 'any' }
+        plan.cards.set(ui, [...(plan.cards.get(ui) ?? []), card])
+      }
+    })
+  }
+  return { plans, total }
+}
+
+// 文字段按要补卡片的块切成几段原文 (行范围的切片); 有序列表从中间切开时, 下一段第一项写回它本来显示的序号
+function proseChunks(plan: ProsePlan): { text: string; indent: number; cards: InlineCard[] }[] {
+  const out: { text: string; indent: number; cards: InlineCard[] }[] = []
+  let from = 0
+  const take = (end: number, indent: number, cards: InlineCard[]) => {
+    const lines = plan.lines.slice(from, end)
+    const first = plan.units.find(u => u.start >= from)
+    const it = first?.item
+    if (from > 0 && first && first.start < end && it?.ordered && it.num !== it.expect) {
+      const at = first.start - from
+      const fixed = (lines[at] ?? '').replace(/^( {0,3})\d{1,9}/, (_m, sp: string) => sp + it.expect)
+      // 序号位数变了会挪动续行的缩进, 这种少见情况保持原样
+      if (fixed.length === (lines[at] ?? '').length) lines[at] = fixed
+    }
+    const text = trimBlankLines(lines.join('\n'))
+    if (text.trim()) out.push({ text, indent, cards })
+  }
+  plan.units.forEach((u, ui) => {
+    const cards = plan.cards.get(ui)
+    if (!cards?.length) return
+    take(u.end, u.indent, cards)
+    from = u.end
+  })
+  if (from < plan.lines.length) take(plan.lines.length, 0, [])
+  return out
+}
+
 function preview(code: string): string {
   const lines = code.split('\n')
   const first = (lines[0] ?? '').trim()
@@ -576,50 +913,55 @@ async function fillPrompt($: any, cmd: string, kind: ShellKind) {
   }
 }
 
-// 一个代码块的卡片: 标题栏 (语言名 … Insert Copy) + 代码区 (上下各空一行, 不贴着标题栏);
-// key 让整张卡片成为悬停范围
-function codeCard($: any, els: any, p: Extract<Part, { kind: 'code' }>, n: number, rid: string, gap: number) {
+// 一张卡片: 标题栏 (语言名 … Insert Copy) + 代码区 (上下各空一行, 不贴着标题栏);
+// key 让整张卡片成为悬停范围. keys = 卡片 / 填入 / 复制 三个 key, id = 记"已复制"用的
+type CardSpec = {
+  keys: { card: string; fill: string; copy: string }
+  id: string
+  lang: string
+  code: string
+  indent: number
+  fill?: { cmd: string; kind: ShellKind }
+}
+function drawCard($: any, els: any, c: CardSpec, gap: number) {
   const { Box, Text, Button, Code } = els
-  const id = `${rid}:${n}`
-  const lang = p.lang.slice(0, 20)
-  const kind = shellKindOf(p)
-  const cmd = kind ? oneCommand(p.code, kind) : undefined
   const actions: any[] = []
-  if (kind && cmd)
+  const fill = c.fill
+  if (fill)
     actions.push(
       <Button
-        key={`fill-${n}`}
+        key={c.keys.fill}
         plain
         dimColor
         label={LABEL.insert}
         hover={PRESS_HOVER}
-        onPress={() => fillPrompt($, cmd, kind)}
+        onPress={() => fillPrompt($, fill.cmd, fill.kind)}
       />,
     )
-  if (copied.has(id)) actions.push(<Text color="success">{LABEL.copied}</Text>)
+  if (copied.has(c.id)) actions.push(<Text color="success">{LABEL.copied}</Text>)
   else
     actions.push(
       <Button
-        key={`copy-${n}`}
+        key={c.keys.copy}
         plain
         dimColor
         label={LABEL.copy}
         hover={PRESS_HOVER}
-        onPress={press => copyText($, id, p.code, press.surface, '已复制: ' + preview(p.code))}
+        onPress={press => copyText($, c.id, c.code, press.surface, '已复制: ' + preview(c.code))}
       />,
     )
   const head: any[] = []
-  if (lang) head.push(<Text color="inactive">{lang}</Text>)
+  if (c.lang) head.push(<Text color="inactive">{c.lang}</Text>)
   head.push(
     <Box flexDirection="row" gap={2}>
       {actions}
     </Box>,
   )
   return (
-    <Box key={`code-${n}`} flexDirection="column" marginTop={gap} marginLeft={p.indent} backgroundColor={CARD_BODY}>
+    <Box key={c.keys.card} flexDirection="column" marginTop={gap} marginLeft={c.indent} backgroundColor={CARD_BODY}>
       <Box
         flexDirection="row"
-        justifyContent={lang ? 'space-between' : 'flex-end'}
+        justifyContent={c.lang ? 'space-between' : 'flex-end'}
         paddingX={2}
         backgroundColor={CARD_HEAD}
         hover={{ backgroundColor: CARD_HEAD_HOVER }}
@@ -627,19 +969,72 @@ function codeCard($: any, els: any, p: Extract<Part, { kind: 'code' }>, n: numbe
         {head}
       </Box>
       <Box paddingX={2} paddingY={1}>
-        {lang ? <Code source={p.code} language={lang} /> : <Code source={p.code} />}
+        {c.lang ? <Code source={c.code} language={c.lang} /> : <Code source={c.code} />}
       </Box>
     </Box>
   )
 }
 
+// 代码块 (```) 的卡片
+function codeCard($: any, els: any, p: Extract<Part, { kind: 'code' }>, n: number, rid: string, gap: number) {
+  const kind = shellKindOf(p)
+  const cmd = kind ? oneCommand(p.code, kind) : undefined
+  return drawCard(
+    $,
+    els,
+    {
+      keys: { card: `code-${n}`, fill: `fill-${n}`, copy: `copy-${n}` },
+      id: `${rid}:${n}`,
+      lang: p.lang.slice(0, 20),
+      code: p.code,
+      indent: p.indent,
+      fill: kind && cmd ? { cmd, kind } : undefined,
+    },
+    gap,
+  )
+}
+
+// 行内命令的卡片: 复制 = 反引号里的原文; 填入 = 补一个 ! (原文已带 ! 不重复补)
+function inlineCard($: any, els: any, c: InlineCard, k: number, indent: number, rid: string) {
+  return drawCard(
+    $,
+    els,
+    {
+      keys: { card: `inline-${k}`, fill: `inline-fill-${k}`, copy: `inline-copy-${k}` },
+      id: `${rid}:inline:${c.key}`,
+      lang: c.lang,
+      code: c.cmd,
+      indent,
+      fill: { cmd: c.cmd, kind: c.kind },
+    },
+    1,
+  )
+}
+
 type Drawn = { tree: any; coverRight: number }
 
-// 终端里带代码块的回复: 自己分段画, 文字段照常, 代码块画成卡片;
-// 返回 undefined = 不归这里画 (没有写完的代码块, 或某段太长)
+// 一段文字画成 Markdown; 里面有真实存在的路径就换成可点击的链接
+async function proseMarkdown($: any, els: any, text: string, key: string, rid: string, budget: Budget) {
+  const { Markdown } = els
+  if (mayLink(text, true)) {
+    const linked = await linkify($, text, true, budget)
+    if (linked.hrefs.length) {
+      noteFound(rid, linked.found)
+      return (
+        <Markdown key={key} text={linked.text} pressableLinks={linked.hrefs} onLinkPress={link => act($, absolute(link.href))} />
+      )
+    }
+  }
+  return <Markdown text={text} />
+}
+
+// 终端里带代码块或行内命令的回复: 自己分段画, 文字段照常, 代码块画成卡片,
+// 行内命令在所在块的后面补一张卡片 (原文一字不改);
+// 返回 undefined = 不归这里画 (没有写完的代码块也没有行内命令, 或某段太长)
 async function drawWithCopy($: any, e: any, props: { text: string; isFirstOfReply: boolean }, budget: Budget) {
   const parts = splitCode(props.text)
-  if (!parts.some(p => p.kind === 'code' && p.code.trim())) return undefined
+  const inline = planInline(parts)
+  if (!parts.some(p => p.kind === 'code' && p.code.trim()) && inline.total === 0) return undefined
   if (parts.some(p => (p.kind === 'prose' ? p.text : p.fenced).length > MAX_PART)) return undefined
 
   const els = $.ui.resolve(e)
@@ -647,28 +1042,22 @@ async function drawWithCopy($: any, e: any, props: { text: string; isFirstOfRepl
   const rid = String(e.requestId ?? '')
   const rows: any[] = []
   let n = 0
+  let k = 0
   let coverRight = 0
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i]
     if (!p) continue
-    const gap = i === 0 ? 0 : 1
+    const gap = rows.length === 0 ? 0 : 1
     if (p.kind === 'prose') {
-      let md = <Markdown text={p.text} />
-      if (mayLink(p.text, true)) {
-        const { text, hrefs, found } = await linkify($, p.text, true, budget)
-        if (hrefs.length) {
-          noteFound(rid, found)
-          md = (
-            <Markdown
-              key={`html-links-${rid}-${i}`}
-              text={text}
-              pressableLinks={hrefs}
-              onLinkPress={link => act($, absolute(link.href))}
-            />
-          )
-        }
+      const plan = inline.plans.get(i)
+      const chunks = plan && plan.cards.size ? proseChunks(plan) : [{ text: p.text, indent: 0, cards: [] as InlineCard[] }]
+      for (let j = 0; j < chunks.length; j++) {
+        const c = chunks[j]
+        if (!c) continue
+        const key = j === 0 ? `html-links-${rid}-${i}` : `html-links-${rid}-${i}-${j}`
+        rows.push(<Box marginTop={rows.length === 0 ? 0 : 1}>{await proseMarkdown($, els, c.text, key, rid, budget)}</Box>)
+        for (const cmd of c.cards) rows.push(inlineCard($, els, cmd, ++k, c.indent, rid))
       }
-      rows.push(<Box marginTop={gap}>{md}</Box>)
       continue
     }
     if (!p.code.trim()) {
@@ -855,11 +1244,11 @@ export const register: Register = on => {
     // 客户端: 维持原样, 只把 HTML 路径换成链接
     if (e.surface !== 'terminal') return (await drawLinked($, e, props, false)) ?? next(e)
 
-    // 终端: 有写完的代码块就分段画成卡片 (路径链接一起处理); 否则只换链接; 都不需要就交给引擎;
+    // 终端: 有写完的代码块或行内命令就分段画成卡片 (路径链接一起处理); 否则只换链接; 都不需要就交给引擎;
     // 最后统一包一层"复制全文"
     const budget = newBudget()
     let drawn: Drawn | undefined
-    if (HAS_FENCE.test(props.text)) drawn = await drawWithCopy($, e, props, budget)
+    if (HAS_FENCE.test(props.text) || INLINE_HINT.test(props.text)) drawn = await drawWithCopy($, e, props, budget)
     if (!drawn) {
       const linked = await drawLinked($, e, props, true, budget)
       if (linked) drawn = { tree: linked, coverRight: 0 }
