@@ -3,7 +3,8 @@
 // hooks (register.tsx) 只把处境当 props 传进来: 忙不忙、心情、当前工具、上下文 %、运行中的子代理、事件气泡、
 //   打字 / 发送 / 庆祝的序号、多久没动静了、悬停时的用量摘要和小贴士; 以及宽度、行数、有没有天空行
 // 模块自己用帧钟 (surface.every, 150ms 一帧) 推进: 走路、排队、粒子、气泡几秒后消失、5 分钟睡着、工具刚结束再撑 4 帧
-//   (v0.16.3: 工具按序号认, 两帧之间就用完的工具也做满 4 帧)
+//   (v0.16.3: 工具按序号认, 两帧之间就用完的工具也做满 4 帧; v0.16.4: 收到新序号的那一刻就画, 不等下一帧,
+//    从那一刻起至少 600ms: 先画的这一下 + 之后 4 帧)
 // 鼠标停在大螃蟹上 (只有全屏模式有指针事件): 大螃蟹立刻停下举钳, 队伍也停; 气泡在停下那一刻定好位置和全文;
 //   指针离开约 0.5 秒后接着走; 指针在横栏别处时, 闲着的螃蟹眼睛看过去. 点击不做任何事 (点一下 Client 会拿走键盘焦点)
 // 终端的 Client 里没有 Raster: 半格像素画成 Text (上像素当 color, 下像素当 backgroundColor), 同色的连续格子合成一段
@@ -153,6 +154,16 @@ function segments(row: Cell[]): Cell[] {
   return out
 }
 
+// 新的工具序号: 从这一刻起画工具动作和道具, 到第 TOOL_HOLD_FRAMES + 1 帧为止 (这一下 + 之后 4 帧 >= 600ms);
+// 画的时候 (props 一到) 和帧钟里都调: 工具只跑几十毫秒时, 不用等下一帧才画, 也不会先闪一下再空一帧
+function latchTool(st: St, p: WalkProps) {
+  if (p.toolSeq === st.toolSeq) return
+  st.toolSeq = p.toolSeq
+  if (!p.toolLast) return
+  st.tool = p.toolLast
+  st.toolUntil = Math.max(st.toolUntil, st.f + TOOL_HOLD_FRAMES + 1)
+}
+
 function start(p: WalkProps): St {
   return {
     L: newLane(p.w, p.rows, p.sky),
@@ -205,14 +216,8 @@ export default function Walkway(props: WalkProps, surface: any) {
         st.sayUntil = st.f + SAY_FRAMES
       }
       if (p.working || p.agents.length) st.lastBusyF = st.f
-      // 工具: 序号变了就做满 TOOL_HOLD_FRAMES 帧 (工具只跑几十毫秒、两帧之间就用完了也不漏); 还在用就一直续上
-      if (p.toolSeq !== st.toolSeq) {
-        st.toolSeq = p.toolSeq
-        if (p.toolLast) {
-          st.tool = p.toolLast
-          st.toolUntil = st.f + TOOL_HOLD_FRAMES
-        }
-      }
+      // 工具: 序号变了就画 (通常在下面画的时候已经认过了); 还在用就一直续上
+      latchTool(st, p)
       if (p.tool) {
         st.tool = p.tool
         st.toolUntil = Math.max(st.toolUntil, st.f + TOOL_HOLD_FRAMES)
@@ -254,6 +259,7 @@ export default function Walkway(props: WalkProps, surface: any) {
     })
   }
   const st: St = surface.state ?? start(props)
+  latchTool(st, props) // props 一到就认新的工具序号, 这一下就画出道具
   laneFit(st.L, props.w, props.rows, props.sky)
   const rows = view(st, props).map(segments)
   return (

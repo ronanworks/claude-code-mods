@@ -91,6 +91,15 @@ export type { Mood } from './sprites'
 //     现在按引擎那行字的宽度给它定宽, 收据紧跟在后面, 放不下先省 "改 N 个文件", 最后才截
 //   工具道具: 工具只跑几十毫秒时, 散步道的帧钟 (150ms) 可能一次也看不到它; 改成按工具序号认, 每次至少做 4 帧
 //
+// v0.16.4 (按第四次实测改):
+//   收据: 引擎节点的祖先 Box 不能带 width / height / minWidth / minHeight / display / overflow / position /
+//     top / left / right / bottom (带了引擎就拒绝整棵树, 自己画, 收据全没了). 现在引擎那行原样放着, 收据放进
+//     旁边一个 flexShrink 0 的 Box, 靠右; 先挑一种写法保证 "引擎那行字的宽 + 收据宽 <= 列数"
+//   "搞定" 改成纯防抖: 主线程一段结束、$.agent.list() 里没有在跑的子代理 -> 等 2 秒; 这 2 秒里来了 turn.start
+//     或 prompt.submit 就取消; 这一段结束前 2 秒内有子代理刚结束 -> 多等 2 秒 (只延一次); 不再记 "欠几次通知"
+//   调试: 环境变量 USAGE_HUD_DEBUG=1 时, 把提问 / 每段 / 子代理 / prompt.submit / 防抖的事件带时间写进 debug 日志
+//   工具道具: 散步道一收到新的工具序号就画 (不等下一帧), 从那一刻起至少 600ms
+//
 // v0.15 散步道 v2:
 //   横栏放得下 3 行就画 3 行版: 大螃蟹用面板那套 12x6 画法 (走路腿交替、眼睛看前面、会眨眼、钳子偶尔夹一下,
 //     冒汗 / 慌张 / 庆祝 / 睡觉和面板一样); 小螃蟹 9x4 排队跟着走; 不够 3 行退到 2 行 / 1 行版
@@ -189,7 +198,8 @@ let tick = 0 // 定时器跳了几次 (面板隐藏时 frame 不走, 额度提�
 // 只算主线程的回合 (turn.start 只有主线程有; turn.complete 带 agentId 的是子代理的回合)
 // 工具次数和改文件包括子代理在这一轮里做的
 type TurnRun = { turnId: string; startedAt: number; usd0?: number; files: Set<string>; add: number; del: number; tools: number }
-// pending: 这一段结束时还在等几个后台子代理 (引擎那行写成 "Waiting for N background agents to finish")
+// pending: 这一段结束时引擎那行可能写成 "Waiting for N background agents to finish" 的 N 的上限
+//   (这次提问里跑过的子代理个数; 0 = 一定不是 Waiting). 只用来估宽, 宁可估宽
 type Receipt = { turnId: string; startedAt: number; completedAt: number; durationMs: number; usd?: number; files: number; add: number; del: number; tools: number; boundTo?: string; pending?: number }
 let turnRun: TurnRun | undefined
 // 最近一段的收据: seg = 这一段, cum = 从提问开始的累计; 只有最近一段能被配对, 一对只配一行
@@ -205,15 +215,13 @@ let lastReceipt: ReceiptPair | undefined
 // 怎么划分 "一次提问" (v0.16.2 起看 prompt.submit 的来源, 不看 turn.start 带不带字):
 //   origin 不是 task-notification (用户回车 / 手机 / SDK / 定时任务 / 别的会话 ...) = 新提问, 上一次没做完的作废
 //   task-notification = 同一次提问的延续; 前面没有 prompt.submit 的 turn.start = 引擎自己接着跑 (闲着时送回的结果), 也是延续
-// 什么时候算做完 (防抖): 主线程结束一段、没有子代理在跑之后, 先等 END_WAIT_MS; 这段时间里来了 task-notification
-//   或新的一段 (turn.start) 就取消, 接着等下一段; 什么都没来才算做完 -> 只庆祝一次, "搞定 N" 的 N = 从用户发出
-//   这条提问到最后一段结束; 有子代理已经结束、它的结果还没送回来时, 等待放宽到 END_LATE_MS
-//   "结果送回来了几次" = task-notification 的 prompt.submit + 前面没有 prompt.submit 的 turn.start;
-//   "结束了几个" 按子代理 id 去重 (同一个子代理的结束事件来两次也只算一个)
-//   已经庆祝过的提问又来了迟到的通知: 接着记账, 不再庆祝
+// 什么时候算做完 (v0.16.4 起纯防抖, 不再记 "欠几次通知"): 主线程结束一段、$.agent.list() 里没有在跑的子代理
+//   -> 等 END_WAIT_MS (2 秒); 这段时间里来了 turn.start 或 prompt.submit 就取消, 接着等下一段; 开始等的时候
+//   前 2 秒内有子代理刚结束 (它的结果可能还在路上) -> 再多等 END_WAIT_MS (只延一次); 什么都没来才算做完 ->
+//   只庆祝一次, "搞定 N" 的 N = 从用户发出这条提问到最后一段结束
+//   已经庆祝过的提问又来了迟到的一段: 接着记账, 不再庆祝
 // 收据: 每一行 TurnDuration 同时拿去比 "这一段的时长" 和 "从提问开始的累计时长", 对上累计的显示整次提问的合计
 const END_WAIT_MS = 2000
-const END_LATE_MS = 10_000
 type Ask = {
   startedAt: number
   usd0?: number
@@ -223,9 +231,7 @@ type Ask = {
   tools: number
   mainTools: number
   segments: number
-  kidEnds: number // 这次提问里结束了几个 "会送结果回来" 的后台子代理 (= endedIds 的个数)
-  endedIds: Set<string>
-  notices: number // 结果送回来了几次 (task-notification 的 prompt.submit, 或前面没有 prompt.submit 的 turn.start)
+  bgKids: Set<string> // 这次提问里跑过的子代理 (估引擎那行会不会写成 "Waiting for N background agents")
   lastEndAt: number // 主线程最后一段结束的时间
   celebrated: boolean
 }
@@ -238,9 +244,7 @@ const newAsk = (at: number, usd0?: number): Ask => ({
   tools: 0,
   mainTools: 0,
   segments: 0,
-  kidEnds: 0,
-  endedIds: new Set(),
-  notices: 0,
+  bgKids: new Set(),
   lastEndAt: 0,
   celebrated: false,
 })
@@ -249,6 +253,10 @@ let submitSinceTurn = '' // 上一个 turn.start 之后来过的 prompt.submit �
 let endToken = 0 // "提问做完" 的防抖: 每次取消 / 重排都换一个号
 let endArmed = 0 // 正在等的那个号 (0 = 没在等)
 let mainOpen = false // 主线程的一段正在跑 (只由 turn.start / turn.complete 改; 渲染时的 isWorking 不算, 免得测试或时序把它冲掉)
+let agentsBusy = 0 // $.agent.list() 里在跑 (running) 的子代理; 防抖只看它
+let lastKidEndAt = -Infinity // 最近一个子代理结束的时间 (防抖开始时 2 秒内有子代理刚结束 -> 多等 2 秒)
+// 调试: 环境变量 USAGE_HUD_DEBUG=1 时把事件带时间写进 debug 日志 ($.ui.log, to: debug); 不设就什么都不写
+let debugOn = false
 let ask: Ask | undefined
 const receiptOf: Record<string, Receipt | null> = {} // TurnDuration 行的 requestId -> 收据 (null = 确定不配)
 // 子代理的 token: 只算主线程和认得的子代理 (和会话记录一样); 引擎自己的分叉 (压缩 / 记忆 ...) 的 id 谁也不认得,
@@ -256,7 +264,7 @@ const receiptOf: Record<string, Receipt | null> = {} // TurnDuration 行的 requ
 const tokPending = new Map<string, Tok>()
 const rowSeenAt: Record<string, number> = {} // TurnDuration 行第一次画出来的时间
 // 配上了收据的行: 引擎那行多宽、收据写哪种, 按列数记下 (面板动画每 0.15 秒让所有行重画, 不必每次重算)
-const fitOf: Record<string, { cols: number; fit: { engineW: number; text: string } | undefined }> = {}
+const fitOf: Record<string, { cols: number; fit: { engineW: number; text: string; width?: number } | undefined }> = {}
 
 // ---- 额度恢复提醒 ----
 type Watch = { armed: boolean; resetAt: number }
@@ -862,7 +870,7 @@ function pruneKids() {
   for (const k of strays.slice(50)) kids.delete(k.id)
 }
 // 用 $.agent.list() 补上描述、类型、状态; 列表里消失了的当作已结束; 同时更新运行中个数
-async function syncAgents($: any, now: number) {
+async function refreshAgents($: any, now: number) {
   let list: any[]
   try {
     list = await $.agent.list()
@@ -881,22 +889,31 @@ async function syncAgents($: any, now: number) {
     if (a.status) k.status = String(a.status)
     if (k.status === 'running') {
       k.endedAt = undefined
+      if (!k.ran) dbg($, now, `子代理在跑 ${k.id} (列表)`)
       k.ran = true
+      if (ask) ask.bgKids.add(k.id)
     } else if (k.endedAt === undefined) {
       k.endedAt = now
-      kidEnded(k)
+      kidEnded($, k, now, '列表 ' + k.status)
     }
   }
   for (const k of kids.values()) {
     if (k.listed && !seen.has(k.id) && k.endedAt === undefined) {
       k.endedAt = now
       if (k.status === 'running') k.status = 'completed'
-      kidEnded(k)
+      kidEnded($, k, now, '列表里没了')
     }
   }
   agentsNow = (list ?? []).filter((a: any) => a?.status === 'running').length
+  agentsBusy = (list ?? []).filter((a: any) => BUSY.has(String(a?.status))).length
   pruneKids()
-  armEnd($, false) // 最后一个子代理刚结束、主线程闲着: 开始等它的结果送回来
+}
+// 只认 running (任务书: "没有在跑的子代理"); pending / waiting 不算: 列表里可能一直挂着别的会话留下的条目, 算了会永远不庆祝
+const BUSY = new Set(['running'])
+// 同步子代理, 再看要不要开始 "提问做完" 的防抖 (最后一个子代理刚结束、主线程闲着)
+async function syncAgents($: any, now: number) {
+  await refreshAgents($, now)
+  armEnd($, now, false)
 }
 
 // 子代理认出来了: 先前记下的 token 加进去
@@ -911,29 +928,30 @@ function kidKnown(k: Kid) {
     tokLive.cacheWrite += t.cacheWrite
   }
 }
-// 一个子代理结束了: 后台子代理会把结果送回主线程, 记一笔 "还欠一次通知"
-// (主线程正在用 Agent 工具时结束的, 是前台子代理: 结果随工具返回, 不会再来通知)
-function kidEnded(k: Kid) {
+// 一个子代理结束了: 记下时间 (防抖开始时 2 秒内有子代理刚结束, 它的结果可能还在路上 -> 多等 2 秒)
+function kidEnded($: any, k: Kid, now: number, how: string) {
   if (!k.ran || k.endNoted) return
   k.endNoted = true
-  if (ask && toolKind(currentTool) !== 'agent' && !ask.endedIds.has(k.id)) {
-    ask.endedIds.add(k.id)
-    ask.kidEnds = ask.endedIds.size
-  }
+  lastKidEndAt = now
+  dbg($, now, `子代理结束 ${k.id} (${how})`)
 }
 
-// "提问做完" 的防抖: 主线程闲着、没有子代理在跑时才排; force = 主线程刚结束一段 (重新计时)
-function armEnd($: any, force: boolean) {
+// "提问做完" 的防抖: 主线程闲着、$.agent.list() 里没有在干活的子代理时才排; force = 主线程刚结束一段 (重新计时)
+// 等 2 秒; 开始等的时候前 2 秒内有子代理刚结束 -> 等 4 秒 (只延这一次)
+function armEnd($: any, now: number, force: boolean) {
   const q = ask
   if (!q || q.celebrated || mainOpen) return
-  if (agentsNow > 0 || runningKids().length > 0) return // 还有子代理在跑: 等它们
+  if (agentsBusy > 0) return // 还有子代理在跑: 等它们
   if (!force && endArmed) return
-  const wait = q.kidEnds > q.notices ? END_LATE_MS : END_WAIT_MS
+  const late = now - lastKidEndAt < END_WAIT_MS
+  const wait = END_WAIT_MS + (late ? END_WAIT_MS : 0)
   const token = ++endToken
   endArmed = token
+  dbg($, now, `防抖开始 等 ${wait}ms` + (late ? ' (2 秒内有子代理刚结束, 多等 2 秒)' : '') + (force ? ' (一段刚结束)' : ''))
   $.clock.after(wait, () => void endAsk($, token))
 }
-function cancelEnd() {
+function cancelEnd($: any, now: number, why: string) {
+  if (endArmed) dbg($, now, `防抖取消 (${why})`)
   endToken += 1
   endArmed = 0
 }
@@ -942,18 +960,37 @@ async function endAsk($: any, token: number) {
   if (token !== endToken) return
   endArmed = 0
   const q = ask
-  if (!q || q.celebrated || mainOpen || agentsNow > 0 || runningKids().length > 0) return
-  q.celebrated = true
+  if (!q || q.celebrated || mainOpen) return
   const now = await $.clock.now()
+  await refreshAgents($, now)
+  if (token !== endToken || mainOpen) return
+  if (agentsBusy > 0) {
+    dbg($, now, '防抖到点, 但又有子代理在跑: 不庆祝, 等它们')
+    return
+  }
+  q.celebrated = true
   lastTurnMs = (q.lastEndAt || now) - q.startedAt
   lastTurnTools = q.mainTools
   celebrateUntil = now + (lastTurnMs > 180_000 ? 2600 : 1400)
   celebSeq += 1
   celebFrames = Math.round((celebrateUntil - now) / FRAME_MS)
   sayNow('搞定 ' + dur(lastTurnMs), now)
+  dbg($, now, `防抖触发: 搞定 ${dur(lastTurnMs)} (从提问开始到最后一段结束 ${lastTurnMs}ms)`)
   // 庆祝结束时再画一次, 让只有客户端的会话也能回到平常的样子
   $.clock.after(celebrateUntil - now + 100, () => redraw($))
   redraw($)
+}
+
+// 调试日志: "[usage-hud] 2026-10-07T12:01:16.533Z 防抖开始 等 2000ms"; 不开就什么都不写
+function dbg($: any, now: number, text: string) {
+  if (!debugOn) return
+  let at = String(now)
+  try {
+    at = new Date(now).toISOString()
+  } catch {}
+  try {
+    $.ui.log(`[usage-hud] ${at} ${text}`, { to: 'debug' })
+  } catch {}
 }
 
 async function openAgents($: any, fromPress: boolean) {
@@ -1716,23 +1753,27 @@ export function engineDur(ms: number): string {
   if (h > 0) return `${h}h ${m}m ${s}s`
   return `${m}m ${s}s`
 }
-// 引擎那行占几格: 2 格符号 + "Cooked for 24s · done 8:13 PM", 或者还有后台子代理没回来时的
-//   "Waiting for 2 background agents to finish"; clockW = "8:13 PM" 这段的宽度 (0 = 没有 "· done")
-// 宁可估宽 (只是多一两个空格), 不能估窄 (引擎那行字会折到下一行)
+// 引擎那行占几格: 2 格符号 + "Cooked for 24s · done 8:13 PM"; pending > 0 (这一段可能写成 "Waiting for N
+//   background agents to finish") 时取两种写法里宽的那个; clockW = "8:13 PM" 这段的宽度 (0 = 没有 "· done")
+// 宁可估宽 (收据少写一点), 不能估窄 (引擎那行被挤短, 字会折到下一行)
 export function engineRowWidth(word: string, durationMs: number, pending: number, clockW: number): number {
-  if (pending > 0) return 2 + dw(`Waiting for ${pending} background agent${pending === 1 ? '' : 's'} to finish`)
-  return 2 + dw(`${word} for ${engineDur(durationMs)}`) + (clockW > 0 ? dw(' · done ') + clockW : 0)
+  const done = 2 + dw(`${word} for ${engineDur(durationMs)}`) + (clockW > 0 ? dw(' · done ') + clockW : 0)
+  if (pending <= 0) return done
+  return Math.max(done, 2 + dw(`Waiting for ${pending} background agent${pending === 1 ? '' : 's'} to finish`))
 }
-// 收据放在引擎那行后面: 整行放得下就全写; 放不下先省 "改 N 个文件"; 还放不下就截 (Text 的 truncate);
-// 剩下不到 4 格就不放. 返回引擎那行的宽和收据的字
-export function receiptFit(r: Receipt, word: string, durationMs: number, cols: number, clockW: number): { engineW: number; text: string } | undefined {
+// 收据放在引擎那行右边 (v0.16.4: 引擎节点的祖先 Box 不能定宽, 收据只能靠右): 引擎那行按整行宽往里缩,
+//   收据 Box 不缩; 所以先挑一种写法保证 "引擎那行字的宽 + 收据宽 <= 列数": 整行放得下就全写; 放不下先省
+//   "改 N 个文件"; 还放不下就给收据 Box 定宽 (= 剩下的格数) 让 Text 截; 剩下不到 4 格就不放
+// 返回引擎那行估的宽、收据的字, 要截时还有收据 Box 的宽
+export function receiptFit(r: Receipt, word: string, durationMs: number, cols: number, clockW: number): { engineW: number; text: string; width?: number } | undefined {
   const engineW = engineRowWidth(word, durationMs, r.pending ?? 0, clockW)
   const room = cols - engineW
   const full = receiptText(r)
   if (!full || room < 4) return undefined
   if (dw(full) <= room) return { engineW, text: full }
-  const short = receiptText({ ...r, files: 0 })
-  return { engineW, text: short || full }
+  const short = receiptText({ ...r, files: 0 }) || full
+  if (dw(short) <= room) return { engineW, text: short }
+  return { engineW, text: short, width: room }
 }
 // "done 8:13 PM" 里时间的宽度: 和引擎一样按 LC_ALL / LC_TIME / LANG (都没有就用系统默认) 写成 "8:13 PM";
 // 前后各错 2 秒也算一遍取宽的 (引擎记的结束时间和这里差几毫秒, 正好跨过整点时位数会变); 没有 Intl 就按 8 格
@@ -1943,7 +1984,15 @@ export const register: Register = on => {
     askFromNext = false
     submitSinceTurn = ''
     lastReceipt = undefined
-    cancelEnd()
+    endToken += 1
+    endArmed = 0
+    agentsBusy = 0
+    lastKidEndAt = -Infinity
+    try {
+      debugOn = String((await $.env.get('USAGE_HUD_DEBUG')) ?? '') === '1'
+    } catch {
+      debugOn = false
+    }
     await readClockLocale($)
     saidCtxFull = false
     saidRunOut.clear()
@@ -1966,6 +2015,8 @@ export const register: Register = on => {
     $.clock.every(FRAME_MS, async () => {
       tick += 1
       if (tick % 40 === 5) void watchLimits($) // 约每 6 秒看一次额度有没有恢复 (面板隐藏时也看)
+      // 提问还没做完、主线程闲着、还没开始防抖 (在等子代理): 约每秒看一次列表, 子代理都结束了就开始防抖
+      if (tick % 7 === 3 && ask && !ask.celebrated && !mainOpen && !endArmed) void syncAgents($, await $.clock.now())
       if (layout === 'off') return
       frame += 1
       // 散步道在 Client 里自己走; 这里只记 "有动静" 的时间 (模块据此算 5 分钟睡着)
@@ -2043,16 +2094,18 @@ export const register: Register = on => {
       turnRun = { turnId: String(e.turnId ?? ''), startedAt: turnStartedAt, usd0, files: new Set(), add: 0, del: 0, tools: 0 }
       // 新的一段开始: "提问做完" 的等待取消
       mainOpen = true
-      cancelEnd()
-      // 这一段属于哪次提问: 用户排队的提问 -> 新提问从这里开始; 前面来的是 task-notification -> 延续;
-      // 前面没有 prompt.submit -> 引擎自己接着跑: 闲着时送回的后台结果就走这条路 (不经过 prompt.submit),
-      //   算延续, 也算 "结果送到了一次"; 已经庆祝过的提问照样只记账, 不再庆祝
+      cancelEnd($, turnStartedAt, 'turn.start')
+      // 这一段属于哪次提问: 用户排队的提问 -> 新提问从这里开始; 其余 (task-notification, 或前面没有
+      //   prompt.submit: 闲着时送回的后台结果就走这条路) -> 延续; 已经庆祝过的提问照样只记账, 不再庆祝
       const via = submitSinceTurn
       submitSinceTurn = ''
-      if (askFromNext || !ask) ask = newAsk(turnStartedAt, usd0)
-      else if (via === '') ask.notices += 1
+      if (askFromNext || !ask) {
+        ask = newAsk(turnStartedAt, usd0)
+        dbg($, turnStartedAt, '提问开始 (排队的提问开跑)')
+      }
       askFromNext = false
       ask.segments += 1
+      dbg($, turnStartedAt, `一段开始 ${String(e.turnId ?? '')} (第 ${ask.segments} 段; 前面的 prompt.submit: ${via || '没有'})`)
       const h = new Date().getHours()
       if (h >= 1 && h < 5 && !nightNoticed) {
         nightNoticed = true
@@ -2118,6 +2171,8 @@ export const register: Register = on => {
       k.ran = true
       k.endedAt = undefined
       k.endNoted = false
+      if (ask) ask.bgKids.add(id)
+      dbg($, now, `子代理开始 ${id} (SubagentStart)`)
       if ((e as any).agent_type) k.type = safe(String((e as any).agent_type))
       redraw($)
     }
@@ -2133,12 +2188,12 @@ export const register: Register = on => {
       k.ran = true
       if (k.endedAt === undefined) k.endedAt = now
       if (k.status === 'running') k.status = 'completed'
-      kidEnded(k)
+      kidEnded($, k, now, 'SubagentStop')
       if ((e as any).agent_type && !k.type) k.type = safe(String((e as any).agent_type))
       const last = String((e as any).last_assistant_message ?? '')
       if (last) k.note = clip(safe(last.replace(/\s+/g, ' ')), 120)
       pruneKids()
-      armEnd($, false)
+      await syncAgents($, now) // 列表里它也不在跑了、主线程闲着 -> 开始防抖
       redraw($)
     }
     return next(e)
@@ -2236,14 +2291,15 @@ export const register: Register = on => {
       currentTool = ''
       lastActive = now
       // 这次提问做没做完: 子代理都结束了、等一小会儿没有新的一段才算 (见 armEnd / endAsk)
-      await syncAgents($, now)
-      // 引擎那行会不会写成 "Waiting for N background agents to finish": 还在跑的 + 结束了结果还没送到的
+      await refreshAgents($, now)
+      // 引擎那行会不会写成 "Waiting for N background agents to finish": N 的上限 = 这次提问里跑过的子代理个数
       if (lastReceipt && lastReceipt.completedAt === now) {
-        const n = runningKids().length + (q ? Math.max(0, q.kidEnds - q.notices) : 0)
+        const n = q ? q.bgKids.size : 0
         lastReceipt.seg.pending = n
         lastReceipt.cum.pending = n
       }
-      armEnd($, true)
+      dbg($, now, `一段结束 ${String(e.turnId ?? '')} (引擎写 ${typeof e.durationMs === 'number' ? e.durationMs + 'ms' : '?'}; 列表里在跑的子代理 ${agentsBusy})`)
+      armEnd($, now, true)
       await refreshRepo($)
       await checkMilestones($)
       redraw($)
@@ -2265,17 +2321,18 @@ export const register: Register = on => {
     const fit = c.fit
     if (!fit) return theirs
     const { Box, Text } = $.ui.resolve(e)
-    // 引擎那行的外层是 width 100%: 直接并排时它按整行宽参与挤压, 收据被推到最右边还截短 (0.16.2 实测)
-    // 所以给它套一层定宽的 Box (宽 = 引擎那行字的宽度), 100% 就按这个宽算; 收据紧跟在后面, 剩下的宽给它
+    // 引擎节点的祖先 Box 一律不带 width / height / minWidth / minHeight / display / overflow / position / 偏移
+    //   (带了引擎拒绝整棵树, 0.16.3 实测). 引擎那行外层是 width 100%, 在这一行里往里缩; 收据 Box 不缩, 靠右.
+    //   receiptFit 已经保证 "引擎那行字的宽 + 收据宽 <= 列数", 引擎那行不会被挤得折行
     // 底边对齐: 引擎那行上面可能留了空行 (marginTop), 收据跟在字的那一行
     return (
       <Box flexDirection="row" alignItems="flex-end">
-        <Box key="engine-row" width={fit.engineW} flexShrink={0}>
-          {theirs}
+        {theirs}
+        <Box key="receipt-box" flexShrink={0} {...(fit.width !== undefined ? { width: fit.width } : {})}>
+          <Text key="receipt" dimColor wrap="truncate">
+            {fit.text}
+          </Text>
         </Box>
-        <Text key="receipt" dimColor wrap="truncate">
-          {fit.text}
-        </Text>
       </Box>
     )
   })
@@ -2308,11 +2365,12 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     const kind = String((e as any).origin?.kind ?? 'composer')
     const now = await $.clock.now()
-    cancelEnd()
+    dbg($, now, `prompt.submit origin=${kind}` + ((e as any).turnId ? ` (塞进正在跑的 ${(e as any).turnId})` : ' (闲着时)'))
+    cancelEnd($, now, 'prompt.submit ' + kind)
     submitSinceTurn = kind
     lastBusyAt = now
     if (kind === 'task-notification') {
-      if (ask) ask.notices += 1
+      // 后台子代理的结果: 同一次提问的延续
     } else if ((e as any).turnId) {
       askFromNext = true // 主线程跑着时打的字: 排在后面, 它那一段开始时才算新提问
     } else {
@@ -2322,6 +2380,7 @@ export const register: Register = on => {
       } catch {}
       ask = newAsk(now, usd0)
       askFromNext = false
+      dbg($, now, '提问开始')
     }
     if (kind === 'composer' || kind === 'bridge') {
       jumpSeq += 1
