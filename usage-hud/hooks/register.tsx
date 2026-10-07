@@ -180,6 +180,18 @@ type TurnRun = { turnId: string; startedAt: number; usd0?: number; files: Set<st
 type Receipt = { turnId: string; startedAt: number; completedAt: number; durationMs: number; usd?: number; files: number; add: number; del: number; tools: number; boundTo?: string }
 let turnRun: TurnRun | undefined
 let lastReceipt: Receipt | undefined // 只有最近一轮能被配对
+
+// ---- 一次提问 (v0.16.1) ----
+// Claude Code 2.1.289 起 Agent 子代理默认放到后台跑: 一次提问里主线程会结束好几段 (每段一个不带 agentId 的
+//   turn.complete, 引擎那行写 "Waiting for 2 background agents to finish" / "Worked for 1s"), 每个子代理结束时
+//   主线程再接着跑一段 (turn.start 的 text 是空的); 最后一段结束那行写的是整次提问的时长 ("Sautéed for 24s")
+// 所以: 新提问 = turn.start 带着用户打的字 (text 不是空的); 接着跑的一段 = text 是空的, 还算同一次提问
+//   只有 "主线程结束 + 没有任何后台子代理在跑" 才算这次提问做完: 这时才庆祝、冒 "搞定 N", N = 整次提问的时长
+//   中间那几段: 不庆祝不冒泡, 收据照旧按那一段配 (引擎那几行写的也是那一段的时长);
+//   最后一行的收据 = 整次提问的合计 (时长 / 花费 / 改了几个文件 / 工具次数), 和引擎那行的时长对得上
+//   子代理跑完之前用户又发了新消息: 上一次提问作废 (不庆祝)
+type Ask = { startedAt: number; usd0?: number; files: Set<string>; add: number; del: number; tools: number; mainTools: number; segments: number }
+let ask: Ask | undefined
 const receiptOf: Record<string, Receipt | null> = {} // TurnDuration 行的 requestId -> 收据 (null = 确定不配)
 const rowSeenAt: Record<string, number> = {} // TurnDuration 行第一次画出来的时间
 
@@ -1504,7 +1516,7 @@ function lineCount(s: unknown): number {
   return s.endsWith('\n') ? n - 1 : n
 }
 // 按工具输入粗算 +/-: Edit 新旧字符串的行数, Write 内容的行数 (删掉的旧内容不知道, 不算)
-function countEdit(run: TurnRun, e: any) {
+function countEdit(run: { files: Set<string>; add: number; del: number }, e: any) {
   const path = String(e.file_path ?? e.notebook_path ?? '')
   if (path) run.files.add(path)
   switch (String(e.tool)) {
@@ -1819,6 +1831,9 @@ export const register: Register = on => {
         usd0 = (await $.session.usage()).cost?.usd
       } catch {}
       turnRun = { turnId: String(e.turnId ?? ''), startedAt: turnStartedAt, usd0, files: new Set(), add: 0, del: 0, tools: 0 }
+      // 一次提问: 用户打了字 = 新提问 (还没做完的上一次提问作废); text 是空的 = 后台子代理结束后主线程接着跑, 还是这次提问
+      if (!ask || String((e as any).text ?? '') !== '') ask = { startedAt: turnStartedAt, usd0, files: new Set(), add: 0, del: 0, tools: 0, mainTools: 0, segments: 0 }
+      ask.segments += 1
       const h = new Date().getHours()
       if (h >= 1 && h < 5 && !nightNoticed) {
         nightNoticed = true
@@ -1907,6 +1922,12 @@ export const register: Register = on => {
     // 收据: 主线程一轮进行中, 所有线程 (含子代理) 的工具都算这一轮的
     const run = turnRun
     if (run) run.tools += 1
+    // 整次提问的合计: 主线程两段之间后台子代理用的工具也算
+    const q = ask
+    if (q) {
+      q.tools += 1
+      if (!e.agentId) q.mainTools += 1
+    }
     // 看板: 子代理的最后动静 / 最后工具 / 次数
     const kid = e.agentId ? kidOf(e.agentId, await $.clock.now()) : undefined
     if (kid) {
@@ -1927,7 +1948,9 @@ export const register: Register = on => {
       if (!e.agentId) currentTool = '' // (工具刚结束时散步道的螃蟹还会多做 4 帧动作, 在模块里算)
       if (kid) kid.lastAt = await $.clock.now()
       // 改文件只算真的改成了的 (没被拒、没报错)
-      if (run && ran && !ran.deny && !ran.isError && toolKind(String(e.tool)) === 'edit') countEdit(run, e)
+      const edited = ran && !ran.deny && !ran.isError && toolKind(String(e.tool)) === 'edit'
+      if (run && edited) countEdit(run, e)
+      if (q && edited) countEdit(q, e)
       redraw($)
     }
   })
@@ -1938,11 +1961,12 @@ export const register: Register = on => {
       // 每轮收据: 在 next(e) 之前落到模块变量里, TurnDuration 那行画出来时就能找到
       const run = turnRun
       turnRun = undefined
+      let usd1: number | undefined
+      try {
+        usd1 = (await $.session.usage()).cost?.usd
+      } catch {}
       if (run && (!e.turnId || !run.turnId || e.turnId === run.turnId)) {
-        let usd1: number | undefined
-        try {
-          usd1 = (await $.session.usage()).cost?.usd
-        } catch {}
+        // 这一段的收据 (中间那几行引擎写的也是这一段的时长)
         lastReceipt = {
           turnId: run.turnId,
           startedAt: run.startedAt,
@@ -1955,17 +1979,40 @@ export const register: Register = on => {
           tools: run.tools,
         }
       }
-      lastTurnMs = turnStartedAt ? now - turnStartedAt : 0
-      lastTurnTools = turnTools
-      celebrateUntil = now + (lastTurnMs > 180_000 ? 2600 : 1400)
-      celebSeq += 1
-      celebFrames = Math.round((celebrateUntil - now) / FRAME_MS)
-      sayNow('搞定 ' + dur(lastTurnMs), now)
-      // 庆祝结束时再画一次, 让只有客户端的会话也能回到平常的样子
-      $.clock.after(celebrateUntil - now + 100, () => redraw($))
       engineWorking = false
       currentTool = ''
       lastActive = now
+      // 还有后台子代理在跑: 这次提问还没做完, 不庆祝、不冒 "搞定" (螃蟹带着小螃蟹照常走)
+      await syncAgents($, now)
+      const waiting = agentsNow > 0 || runningKids().length > 0
+      if (!waiting) {
+        const q = ask
+        ask = undefined
+        // N = 整次提问的时长 (从用户发出消息那一轮开始算); 只有一段时和以前一样
+        const t0 = q?.startedAt ?? turnStartedAt
+        lastTurnMs = t0 ? now - t0 : 0
+        lastTurnTools = q ? q.mainTools : turnTools
+        // 分了几段的提问: 最后一行配整次提问的合计 (引擎那行写的就是整次提问的时长)
+        if (q && q.segments > 1) {
+          lastReceipt = {
+            turnId: String(e.turnId ?? ''),
+            startedAt: q.startedAt,
+            completedAt: now,
+            durationMs: lastTurnMs,
+            usd: q.usd0 !== undefined && usd1 !== undefined ? Math.max(0, usd1 - q.usd0) : undefined,
+            files: q.files.size,
+            add: q.add,
+            del: q.del,
+            tools: q.tools,
+          }
+        }
+        celebrateUntil = now + (lastTurnMs > 180_000 ? 2600 : 1400)
+        celebSeq += 1
+        celebFrames = Math.round((celebrateUntil - now) / FRAME_MS)
+        sayNow('搞定 ' + dur(lastTurnMs), now)
+        // 庆祝结束时再画一次, 让只有客户端的会话也能回到平常的样子
+        $.clock.after(celebrateUntil - now + 100, () => redraw($))
+      }
       await refreshRepo($)
       await checkMilestones($)
       redraw($)

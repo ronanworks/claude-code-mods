@@ -1729,3 +1729,120 @@ test('工具在跑时 (接上真的横栏): 大螃蟹停下原地做这个工具
   }
   await ui.unmount()
 })
+
+// ======================== v0.16.1: 后台子代理 (一次提问里主线程结束好几段) ========================
+// Claude Code 2.1.289 默认把 Agent 子代理放到后台: 主线程先结束一段 (turn.complete), 等子代理;
+// 每个子代理结束时主线程再接着跑一段 (turn.start 的 text 是空的); 最后一行写整次提问的时长
+async function bgSetup($: any, on: any) {
+  const T = 1_900_000_000_000
+  let list: any[] = []
+  let usd = 1
+  const calls = await start($, on, WIN, { mockClock: T, agents: () => list, usage: () => ({ ...lowUsage(), cost: { usd } }) })
+  const clock = calls.clock
+  const band = await mountAbove($, 120, 4)
+  const props = async () => ((await band.find({ type: 'Client' })) as any)?.props.props
+  const kid = (id: string, status = 'running') => ({ id, description: id, type: 'general-purpose', status })
+  return {
+    clock,
+    band,
+    props,
+    setAgents: (l: any[]) => (list = l),
+    kid,
+    spend: (d: number) => (usd += d),
+  }
+}
+const done = (turnId: string, durationMs: number) => ({ answer: '', durationMs, isAborted: false, turnId, reason: 'answer' }) as any
+
+test('后台子代理: 主线程先结束一段时子代理还在跑 -> 不庆祝不冒泡; 子代理逐个结束、主线程接着跑完 -> 只庆祝一次, "搞定 N" 的 N = 整次提问的时长', { timeoutMs: 30_000 }, async ($, on) => {
+  const b = await bgSetup($, on)
+  const c0 = (await b.props()).celebSeq
+  // 第 1 段: 用户发消息, 主线程派两个后台子代理, 13 秒后这一段结束
+  await $.turn.start({ text: '读 a.txt 和 b.txt', turnId: 't1' } as any)
+  await $.tool.call({ tool: 'Agent', description: 'a', prompt: 'x' } as any)
+  await $.tool.call({ tool: 'Agent', description: 'b', prompt: 'y' } as any)
+  b.setAgents([b.kid('k1'), b.kid('k2')])
+  await $.classic.SubagentStart({ agent_id: 'k1', agent_type: 'general-purpose' } as any)
+  await $.classic.SubagentStart({ agent_id: 'k2', agent_type: 'general-purpose' } as any)
+  b.spend(0.17)
+  await b.clock.advance(13_000)
+  await $.turn.complete(done('t1', 13_000))
+  let p = await b.props()
+  expect(p.celebSeq).toBe(c0) // 不庆祝
+  expect(p.say?.text?.includes('搞定') ?? false).toBe(false) // 不冒 "搞定"
+  expect(p.agents.length).toBe(2) // 小螃蟹照常跟着走
+  // 第 1 行 (引擎写 "Waiting for 2 background agents to finish"): 这一段的收据
+  const r1 = await mountTurn($, 'row-1', 13_000)
+  expect((await r1.findAll({ type: 'Text' })).map((x: any) => x.text)).toContain(' · $0.17 · 工具 2 次')
+  await r1.unmount()
+  // 第 1 个子代理结束 -> 主线程接着跑 1 秒 (还有 1 个子代理在跑)
+  await b.clock.advance(2_000)
+  b.setAgents([b.kid('k1', 'completed'), b.kid('k2')])
+  await $.classic.SubagentStop({ agent_id: 'k1', agent_type: 'general-purpose', agent_transcript_path: '', stop_hook_active: false, last_assistant_message: 'ok' } as any)
+  await $.turn.start({ text: '', turnId: 't2' } as any)
+  b.spend(0.01)
+  await b.clock.advance(1_000)
+  await $.turn.complete(done('t2', 1_000))
+  p = await b.props()
+  expect(p.celebSeq).toBe(c0)
+  expect(p.say?.text?.includes('搞定') ?? false).toBe(false)
+  const r2 = await mountTurn($, 'row-2', 1_000)
+  expect((await r2.findAll({ type: 'Text' })).map((x: any) => x.text)).toContain(' · $0.01')
+  await r2.unmount()
+  // 第 2 个子代理结束 -> 主线程接着跑 5 秒, 写一个文件, 这次提问做完
+  await b.clock.advance(3_000)
+  b.setAgents([b.kid('k1', 'completed'), b.kid('k2', 'completed')])
+  await $.classic.SubagentStop({ agent_id: 'k2', agent_type: 'general-purpose', agent_transcript_path: '', stop_hook_active: false, last_assistant_message: 'ok' } as any)
+  await $.turn.start({ text: '', turnId: 't3' } as any)
+  await $.tool.call({ tool: 'Write', file_path: CWD + '/summary.md', content: ['1', '2', '3', ''].join(String.fromCharCode(10)) } as any)
+  b.spend(0.06)
+  await b.clock.advance(5_000)
+  await $.turn.complete(done('t3', 5_000))
+  p = await b.props()
+  expect(p.celebSeq).toBe(c0 + 1) // 只庆祝这一次
+  expect(p.say?.text).toBe('「搞定 24s」') // 13 + 2 + 1 + 3 + 5 = 24 秒, 和引擎最后那行 "for 24s" 对得上
+  // 面板的 "上一轮" 也是整次提问: 24 秒, 主线程用了 3 次工具
+  const hint = await mountHint($, 'terminal', 140)
+  expect((await hint.findAll({ type: 'Text' })).some((x: any) => x.text.includes('上一轮 24s，3 次工具'))).toBe(true)
+  await hint.unmount()
+  // 最后一行 (引擎写 "Sautéed for 24s", durationMs = 整次提问): 整次提问的合计收据
+  const r3 = await mountTurn($, 'row-3', 24_000)
+  expect((await r3.findAll({ type: 'Text' })).map((x: any) => x.text)).toContain(' · $0.24 · 改 1 个文件 +3 -0 · 工具 3 次')
+  await r3.unmount()
+  // 之后再画也不会多庆祝
+  await b.clock.advance(10_000)
+  expect((await b.props()).celebSeq).toBe(c0 + 1)
+  await b.band.unmount()
+})
+
+test('后台子代理: 子代理跑完之前用户又发了新消息 -> 上一次提问的庆祝作废; 新提问做完时只庆祝一次, N 从新消息算起', { timeoutMs: 30_000 }, async ($, on) => {
+  const b = await bgSetup($, on)
+  const c0 = (await b.props()).celebSeq
+  await $.turn.start({ text: '第一个问题', turnId: 'q1' } as any)
+  await $.tool.call({ tool: 'Agent', description: 'a', prompt: 'x' } as any)
+  b.setAgents([b.kid('k1')])
+  await $.classic.SubagentStart({ agent_id: 'k1', agent_type: 'general-purpose' } as any)
+  await b.clock.advance(10_000)
+  await $.turn.complete(done('q1', 10_000))
+  expect((await b.props()).celebSeq).toBe(c0)
+  // 子代理还在跑, 用户发了新消息
+  await b.clock.advance(5_000)
+  await $.turn.start({ text: '第二个问题', turnId: 'q2' } as any)
+  await b.clock.advance(4_000)
+  b.setAgents([b.kid('k1', 'completed')])
+  await $.classic.SubagentStop({ agent_id: 'k1', agent_type: 'general-purpose', agent_transcript_path: '', stop_hook_active: false, last_assistant_message: 'ok' } as any)
+  await $.turn.complete(done('q2', 4_000))
+  const p = await b.props()
+  expect(p.celebSeq).toBe(c0 + 1) // 只有新提问庆祝了一次
+  expect(p.say?.text).toBe('「搞定 4s」') // 从新消息算起, 不是从第一个问题算起的 19 秒
+  // 负路径: 没有子代理的普通提问照旧每次都庆祝
+  await $.turn.start({ text: '第三个问题', turnId: 'q3' } as any)
+  await b.clock.advance(3_000)
+  await $.turn.complete(done('q3', 3_000))
+  expect((await b.props()).celebSeq).toBe(c0 + 2)
+  expect((await b.props()).say?.text).toBe('「搞定 3s」')
+  const r = await mountTurn($, 'row-q3', 3_000)
+  expect((await r.findAll({ type: 'Text' })).some((x: any) => x.text.startsWith(' · '))).toBe(false) // 没花钱没改文件没用工具: 不追加
+  await r.unmount()
+  await b.band.unmount()
+})
+
