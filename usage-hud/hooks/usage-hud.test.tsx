@@ -1,6 +1,8 @@
 import { test, expect, mock } from 'claude-code/testing'
 import { previewScene, previewPixels, previewLane, laneTip, paceOf, moodOf, receiptText } from './register'
 import { crabSvg, dashSvg } from './desktop'
+// v0.16.3 的新函数用 * 取: 反查时放在 0.16.2 上跑, 缺的函数只让用到它的测试失败, 不让整个文件加载不了
+import * as reg from './register'
 
 const USAGE = {
   startedAt: Date.now() - 5_520_000,
@@ -1983,4 +1985,160 @@ test('token: 主线程 + 认得的子代理才算, 先到的子代理用量等�
   expect(await detail()).toContain('新输入 140，输出 2')
   await step('k1') // 认出来以后直接算
   expect(await detail()).toContain('新输入 180，输出 3')
+})
+
+// ======================== v0.16.3: 第三次实测的三个问题 ========================
+// 问题 1: 后台子代理的结果在主线程闲着时送回来, 引擎从队列里取出来直接另起一段: 不经过 prompt.submit
+//   (会话记录里是 queue-operation dequeue; 0.16.0 的录像里这两次都没跳, 0.16.0 是每次 prompt.submit 都跳).
+//   所以这里不调 b.notice(), 直接 turn.start. 时间线照第三次实测的会话记录取整 (从用户回车算起):
+//   11-12s 派 2 个子代理, 14s 第一段结束 ("Waiting for 2 background agents"), 15s k1 结束、结果另起一段,
+//   16s k2 结束 (第二段还在跑), 17s 第二段结束、k2 的结果马上另起第三段, 写文件, 24s 第三段结束 ("Cooked for 24s")
+test('实测 3 的顺序: 闲着时送回的结果不经过 prompt.submit、直接另起一段 -> 最后一段结束后约 2 秒庆祝 (不是 10 秒), N = 24s; 只有用户回车跳', { timeoutMs: 30_000 }, async ($, on) => {
+  const b = await bgSetup($, on)
+  const p0 = await b.props()
+  const ws: Array<[number, number | undefined]> = [] // 每段结束那行: [引擎那行套的定宽, 应该的宽] (最后再比, 先看庆祝的时间)
+  await b.userSays('按顺序做: Glob、读 notes.txt、派 2 个子代理、写 summary.md')
+  await $.turn.start({ text: '按顺序做', turnId: 'v1' } as any)
+  await $.tool.call({ tool: 'Glob', pattern: '*.txt' } as any)
+  await $.tool.call({ tool: 'Read', file_path: CWD + '/notes.txt' } as any)
+  await b.clock.advance(11_000)
+  await b.spawn('k1')
+  await b.clock.advance(1_000)
+  await b.spawn('k2')
+  await b.clock.advance(2_000)
+  await $.turn.complete(done('v1', 14_000))
+  // 引擎这一行写 "Waiting for 2 background agents to finish": 定宽要按这句算 (估窄了引擎那行会折到下一行)
+  ws.push([await engineW($, 'row-v1', 14_000), 43])
+  await b.clock.advance(1_000)
+  await b.finish('k1')
+  await $.turn.start({ text: '<task-notification>', turnId: 'v2' } as any) // 没有 prompt.submit
+  await b.clock.advance(1_000)
+  await b.finish('k2') // 第二段还在跑时 k2 结束, 它的结果排在队列里
+  b.spend(0.01)
+  await b.clock.advance(1_000)
+  await $.turn.complete(done('v2', 2_000))
+  // 第二段结束时 k2 的结果还在队列里: 引擎写 "Waiting for 1 background agent to finish" (结束 2 个 - 送到 1 次)
+  ws.push([await engineW($, 'row-v2', 2_000), 42])
+  await $.turn.start({ text: '<task-notification>', turnId: 'v3' } as any) // 队列里的结果马上另起一段, 也没有 prompt.submit
+  await b.clock.advance(4_000)
+  await $.tool.call({ tool: 'Write', file_path: CWD + '/summary.md', content: 'x' } as any)
+  await b.clock.advance(3_000)
+  await $.turn.complete(done('v3', 7_000))
+  // 最后一行 "Cooked for 24s · done 8:13 PM": 两个结果都送到了, 不再是 Waiting
+  ws.push([await engineW($, 'row-v3', 24_000), reg.engineRowWidth?.('Baked', 24_000, 0, reg.clockWidth?.(b.clock.now()))])
+  await b.clock.advance(1_000)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq)
+  await b.clock.advance(1_200)
+  const p = await b.props()
+  expect(p.celebSeq).toBe(p0.celebSeq + 1) // 两次结果都送到了: 2 秒的防抖, 不是 10 秒的上限
+  expect(p.say?.text).toBe('「搞定 24s」')
+  expect(p.jumpSeq).toBe(p0.jumpSeq + 1) // 只有用户回车跳了一次
+  expect(ws.map(([got]) => got)).toEqual(ws.map(([, want]) => want))
+  await b.band.unmount()
+})
+
+test('庆祝过以后引擎又接着跑了一段 (迟到的结果, 前面没有 prompt.submit): 只记账, 不再庆祝; 用户再发消息才是新提问', { timeoutMs: 30_000 }, async ($, on) => {
+  const b = await bgSetup($, on)
+  const p0 = await b.props()
+  await b.userSays('你好')
+  await $.turn.start({ text: '你好', turnId: 'u1' } as any)
+  await b.clock.advance(3_000)
+  await $.turn.complete(done('u1', 3_000))
+  await b.clock.advance(2_200)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq + 1)
+  await b.clock.advance(3_000)
+  await $.turn.start({ text: '<task-notification>', turnId: 'u2' } as any)
+  await b.clock.advance(1_000)
+  await $.turn.complete(done('u2', 1_000))
+  await b.clock.advance(12_000)
+  expect((await b.props()).celebSeq).toBe(p0.celebSeq + 1) // 没有第二次庆祝
+  await b.userSays('再来')
+  await $.turn.start({ text: '再来', turnId: 'u3' } as any)
+  await b.clock.advance(2_000)
+  await $.turn.complete(done('u3', 2_000))
+  await b.clock.advance(2_200)
+  const p = await b.props()
+  expect(p.celebSeq).toBe(p0.celebSeq + 2)
+  expect(p.say?.text).toBe('「搞定 2s」')
+  await b.band.unmount()
+})
+
+// 画出引擎那一行, 读外面那层定宽 Box 的宽 (没有就是 -1)
+async function engineW($: any, id: string, durationMs: number) {
+  const r = await mountTurn($, id, durationMs)
+  const box: any = await r.find({ type: 'Box', key: 'engine-row' })
+  await r.unmount()
+  return box ? box.props.width : -1
+}
+
+// 问题 2: 引擎那行 (TurnDuration) 的外层是 width 100% (2.1.289 的 TurnDurationMessage 源码: Box column 100% >
+//   Box row 100% > [符号 minWidth 2, Text]). 0.16.2 把它和收据直接并排, 两边按 "基准宽 x 收缩" 一起挤:
+//   收据宽 = 140 x R / (140 + R): R = 40 -> 31 格, R = 20 -> 17 格 (都含开头的空格), 和录像里的两行一格不差
+test('收据紧跟在引擎那行字后面: 引擎那行套一层定宽的 Box (宽 = 字的宽度); 整行放得下不截, 放不下先省「改 N 个文件」, 最后才截', async ($, on) => {
+  // 引擎写时长的办法
+  expect([3_000, 24_400, 546_000, 3_723_000].map(ms => reg.engineDur?.(ms))).toEqual(['3s', '24s', '9m 6s', '1h 2m 3s'])
+  // 引擎那行的宽度: 和录像里的两行一样长
+  expect(reg.engineRowWidth?.('Cooked', 24_000, 0, 7)).toBe('✻ Cooked for 24s · done 8:13 PM'.length)
+  expect(reg.engineRowWidth?.('Cooked', 24_000, 2, 7)).toBe('✻ Waiting for 2 background agents to finish'.length)
+  expect(reg.engineRowWidth?.('Cooked', 24_000, 1, 7)).toBe('✻ Waiting for 1 background agent to finish'.length)
+  const r = { turnId: 'x', startedAt: 0, completedAt: 0, durationMs: 24_000, usd: 0.15, files: 1, add: 7, del: 0, tools: 5 }
+  const full = ' · $0.15 · 改 1 个文件 +7 -0 · 工具 5 次'
+  const fit = (cols: number, x: any = r) => reg.receiptFit?.(x, 'Cooked', 24_000, cols, 7)
+  expect(fit(140)).toEqual({ engineW: 31, text: full }) // 140 列: 全写, 紧跟在第 31 格后面
+  expect(fit(71)).toEqual({ engineW: 31, text: full }) // 31 + 40 = 71: 正好放得下
+  expect(fit(70)).toEqual({ engineW: 31, text: ' · $0.15 · 工具 5 次' }) // 差 1 格: 先省改文件
+  expect(fit(40)).toEqual({ engineW: 31, text: ' · $0.15 · 工具 5 次' }) // 再窄: 交给 Text 截
+  expect(fit(34)).toBe(undefined) // 剩不到 4 格: 不放
+  expect(fit(140, { ...r, pending: 2 })?.engineW).toBe(43) // Waiting 那行更长
+})
+
+test('收据 (接上真的 hooks): 一轮结束后画引擎那行, 外面套一层定宽 Box (flexShrink 0), 收据全写在后面', async ($, on) => {
+  const T = 1_900_000_300_000
+  let usd = 1
+  const { clock } = await start($, on, WIN, { mockClock: T, agents: () => [], usage: () => ({ ...lowUsage(), cost: { usd } }) })
+  await $.prompt.submit({ text: 'hi', wait: false, origin: { kind: 'composer' } } as any)
+  await $.turn.start({ text: 'hi', turnId: 'w1' } as any)
+  await $.tool.call({ tool: 'Write', file_path: CWD + '/a.md', content: ['1', '2', '3', ''].join(String.fromCharCode(10)) } as any)
+  await $.tool.call({ tool: 'Read', file_path: CWD + '/a.md' } as any)
+  usd += 0.42
+  await clock.advance(9_000)
+  await $.turn.complete(done('w1', 9_000))
+  const row = await mountTurn($, 'msg-w1', 9_000) // 140 列, word = Baked
+  const box: any = await row.find({ type: 'Box', key: 'engine-row' })
+  expect(box ? 'ok' : '引擎那行没有套定宽的 Box').toBe('ok')
+  expect(box.props.width).toBe(reg.engineRowWidth('Baked', 9_000, 0, reg.clockWidth(T + 9_000)))
+  expect(box.props.flexShrink).toBe(0)
+  expect((await row.findAll({ type: 'Text' })).map((x: any) => x.text)).toContain(' · $0.42 · 改 1 个文件 +3 -0 · 工具 2 次')
+  await row.unmount()
+})
+
+// 问题 3: 工具只跑几十毫秒 (第三次实测: Glob 104ms, Read 66ms; 写文件 143ms 那次出了道具), 工具开始和结束都落在
+//   散步道两帧 (150ms) 之间, 帧钟一次也看不到 currentTool. 现在 hooks 每次工具加一个序号, 散步道见到新序号就做满 4 帧
+test('工具只跑几十毫秒 (开始和结束都在两帧之间): 大螃蟹也停下做满 4 帧 (约 600ms) 动作并带道具, 然后接着走 (mock.clock + 散步道帧钟)', { timeoutMs: 30_000 }, async ($, on) => {
+  const T = 1_900_000_400_000
+  const { clock } = await start($, on, WIN, { mockClock: T, usage: lowUsage, agents: () => [] })
+  const ui = await mountAbove($, 100, 4, { working: true })
+  await $.turn.start({ text: 'hi', turnId: 'f1' } as any)
+  await clock.advance(10)
+  await ui.advance(1500)
+  const READ = 0xd4d4d8
+  const propOf = (w: any) => w.px.flatMap((row: number[]) => row.slice(w.bx + 12, w.bx + 15)).includes(READ)
+  const before = await walkOf(ui)
+  expect(propOf(before)).toBe(false) // 对照: 没用工具时右边没有纸
+  await $.tool.call({ tool: 'Read', file_path: CWD + '/a.ts' } as any) // 一下子就用完了, 中间帧钟没走
+  await clock.settle()
+  const seen: string[] = []
+  let bx0 = -1
+  for (let i = 0; i < 4; i++) {
+    await ui.advance(150)
+    const w = await walkOf(ui)
+    if (i === 0) bx0 = w.bx
+    seen.push((propOf(w) ? '纸' : '无') + (w.bx === bx0 ? '停' : '走'))
+  }
+  expect(seen).toEqual(['纸停', '纸停', '纸停', '纸停'])
+  await ui.advance(1500)
+  const after = await walkOf(ui)
+  expect(propOf(after)).toBe(false)
+  expect(after.bx !== bx0).toBe(true) // 做完接着走
+  await ui.unmount()
 })

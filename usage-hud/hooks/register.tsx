@@ -71,7 +71,8 @@ export type { Mood } from './sprites'
 //   主会话一轮在跑 -> 大螃蟹横着走, 碰到两端掉头, 速度跟心情 (悠闲慢 / 正常 / 冒汗快 / 慌张小跑)
 //   闲着 -> 趴着偶尔眨眼; 5 分钟没动静 -> 睡着 (闭眼 + z); 一轮结束 -> 举钳跳
 //   每个运行中的子代理一只小螃蟹, 排成一队; 放不下画几只 + 暗色 "+N"; 子代理结束 -> 挥手 1.5 秒后离场
-//   主会话闲着、后台子代理还在跑 -> 大螃蟹趴着, 小螃蟹照样走; 面板里的螃蟹不再带小螃蟹
+//   主会话闲着、后台子代理还在跑 -> 大螃蟹照样走, 小螃蟹排成一队跟在后面 (v0.15 起; 状态写 "子代理在跑");
+//     面板里的螃蟹不再带小螃蟹
 //   气泡 (「」, 约 5 秒, 新的顶掉旧的): 搞定 3m12s / 压缩完了 / 额度刷新了 / 慢点！40m用完 (红) / 上下文快满了 / 等你点头
 //   鼠标停在横栏上 (只在全屏模式) -> 一行用量摘要 + 小贴士
 //
@@ -82,6 +83,13 @@ export type { Mood } from './sprites'
 //   散步道大螃蟹拿到面板螃蟹的整套动作 (scenePx): 用工具时停下做动作、道具画在右边; 在想时走, 头顶冒思考点点
 //   粒子加量 (走路同时 3-5 粒, 小跑 5-7 粒, 上限 24); 小螃蟹改成 7x4, 眼睛四周都是身体
 //   散步道整个搬进 Client 模块: 鼠标停在大螃蟹上 -> 停下举钳 + 气泡 (停下时定好), 离开约 0.5 秒后接着走
+//
+// v0.16.3 (按第三次实测改):
+//   后台子代理的结果在主线程闲着时送回来, 不经过 prompt.submit, 直接是一个没有 prompt.submit 的 turn.start:
+//     这种 turn.start 算 "结果送到了一次"; 已经庆祝过的提问再来这种段, 只记账不再庆祝
+//   收据: 引擎那行 (TurnDuration) 的外层是 width 100%, 和收据并排时两边按比例挤, 收据被推到最右边还截短;
+//     现在按引擎那行字的宽度给它定宽, 收据紧跟在后面, 放不下先省 "改 N 个文件", 最后才截
+//   工具道具: 工具只跑几十毫秒时, 散步道的帧钟 (150ms) 可能一次也看不到它; 改成按工具序号认, 每次至少做 4 帧
 //
 // v0.15 散步道 v2:
 //   横栏放得下 3 行就画 3 行版: 大螃蟹用面板那套 12x6 画法 (走路腿交替、眼睛看前面、会眨眼、钳子偶尔夹一下,
@@ -134,6 +142,10 @@ let lastTurnTools = 0
 let turnTools = 0
 let totalTools = 0
 let currentTool = ''
+// 主线程每用一次工具加 1, 连同工具种类推给散步道: 工具只跑几十毫秒时, 散步道 150ms 一帧的帧钟可能一次也看不到
+// currentTool, 按序号认就不会漏 (每次至少做 TOOL_HOLD_FRAMES 帧动作)
+let toolSeq = 0
+let toolLast: ToolKind | '' = ''
 let toolCounts: Record<string, number> = {}
 let effort = ''
 let modelId = ''
@@ -177,7 +189,8 @@ let tick = 0 // 定时器跳了几次 (面板隐藏时 frame 不走, 额度提�
 // 只算主线程的回合 (turn.start 只有主线程有; turn.complete 带 agentId 的是子代理的回合)
 // 工具次数和改文件包括子代理在这一轮里做的
 type TurnRun = { turnId: string; startedAt: number; usd0?: number; files: Set<string>; add: number; del: number; tools: number }
-type Receipt = { turnId: string; startedAt: number; completedAt: number; durationMs: number; usd?: number; files: number; add: number; del: number; tools: number; boundTo?: string }
+// pending: 这一段结束时还在等几个后台子代理 (引擎那行写成 "Waiting for N background agents to finish")
+type Receipt = { turnId: string; startedAt: number; completedAt: number; durationMs: number; usd?: number; files: number; add: number; del: number; tools: number; boundTo?: string; pending?: number }
 let turnRun: TurnRun | undefined
 // 最近一段的收据: seg = 这一段, cum = 从提问开始的累计; 只有最近一段能被配对, 一对只配一行
 type ReceiptPair = { seg: Receipt; cum: Receipt; startedAt: number; completedAt: number; boundTo?: string }
@@ -185,14 +198,18 @@ let lastReceipt: ReceiptPair | undefined
 
 // ---- 一次提问 (v0.16.1 / v0.16.2) ----
 // Claude Code 2.1.289 起 Agent 子代理默认放到后台跑: 一次提问里主线程会结束好几段 (每段一个不带 agentId 的
-//   turn.complete); 子代理结束后, 它的结果作为一次 prompt.submit 送回主线程 (origin.kind = 'task-notification'):
-//   主线程闲着时另起一段, 正在跑时塞进这一段. 最后一段结束那行引擎写的是整次提问的时长 ("Churned for 34s")
+//   turn.complete); 子代理结束后, 它的结果送回主线程, 有两条路 (v0.16.3 按录像和会话记录核实):
+//     主线程正在跑: 塞进这一段, 走 prompt.submit (origin.kind = 'task-notification', 带 turnId)
+//     主线程闲着: 引擎从队列里取出来另起一段, 不经过 prompt.submit, 直接 turn.start (前面没有 prompt.submit)
+//   最后一段结束那行引擎写的是整次提问的时长 ("Churned for 34s")
 // 怎么划分 "一次提问" (v0.16.2 起看 prompt.submit 的来源, 不看 turn.start 带不带字):
 //   origin 不是 task-notification (用户回车 / 手机 / SDK / 定时任务 / 别的会话 ...) = 新提问, 上一次没做完的作废
-//   task-notification = 同一次提问的延续
+//   task-notification = 同一次提问的延续; 前面没有 prompt.submit 的 turn.start = 引擎自己接着跑 (闲着时送回的结果), 也是延续
 // 什么时候算做完 (防抖): 主线程结束一段、没有子代理在跑之后, 先等 END_WAIT_MS; 这段时间里来了 task-notification
 //   或新的一段 (turn.start) 就取消, 接着等下一段; 什么都没来才算做完 -> 只庆祝一次, "搞定 N" 的 N = 从用户发出
 //   这条提问到最后一段结束; 有子代理已经结束、它的结果还没送回来时, 等待放宽到 END_LATE_MS
+//   "结果送回来了几次" = task-notification 的 prompt.submit + 前面没有 prompt.submit 的 turn.start;
+//   "结束了几个" 按子代理 id 去重 (同一个子代理的结束事件来两次也只算一个)
 //   已经庆祝过的提问又来了迟到的通知: 接着记账, 不再庆祝
 // 收据: 每一行 TurnDuration 同时拿去比 "这一段的时长" 和 "从提问开始的累计时长", 对上累计的显示整次提问的合计
 const END_WAIT_MS = 2000
@@ -206,12 +223,27 @@ type Ask = {
   tools: number
   mainTools: number
   segments: number
-  kidEnds: number // 这次提问里结束了几个 "会送结果回来" 的后台子代理
-  notices: number // 收到了几次 task-notification
+  kidEnds: number // 这次提问里结束了几个 "会送结果回来" 的后台子代理 (= endedIds 的个数)
+  endedIds: Set<string>
+  notices: number // 结果送回来了几次 (task-notification 的 prompt.submit, 或前面没有 prompt.submit 的 turn.start)
   lastEndAt: number // 主线程最后一段结束的时间
   celebrated: boolean
 }
-const newAsk = (at: number, usd0?: number): Ask => ({ startedAt: at, usd0, files: new Set(), add: 0, del: 0, tools: 0, mainTools: 0, segments: 0, kidEnds: 0, notices: 0, lastEndAt: 0, celebrated: false })
+const newAsk = (at: number, usd0?: number): Ask => ({
+  startedAt: at,
+  usd0,
+  files: new Set(),
+  add: 0,
+  del: 0,
+  tools: 0,
+  mainTools: 0,
+  segments: 0,
+  kidEnds: 0,
+  endedIds: new Set(),
+  notices: 0,
+  lastEndAt: 0,
+  celebrated: false,
+})
 let askFromNext = false // 用户在主线程跑着时打了字 (排队): 下一个 turn.start 才算新提问开始
 let submitSinceTurn = '' // 上一个 turn.start 之后来过的 prompt.submit 的来源 ('' = 没有)
 let endToken = 0 // "提问做完" 的防抖: 每次取消 / 重排都换一个号
@@ -223,6 +255,8 @@ const receiptOf: Record<string, Receipt | null> = {} // TurnDuration 行的 requ
 // 不算. 认出来之前先记在这里, 认出来 (SubagentStart / $.agent.list()) 时再加进去
 const tokPending = new Map<string, Tok>()
 const rowSeenAt: Record<string, number> = {} // TurnDuration 行第一次画出来的时间
+// 配上了收据的行: 引擎那行多宽、收据写哪种, 按列数记下 (面板动画每 0.15 秒让所有行重画, 不必每次重算)
+const fitOf: Record<string, { cols: number; fit: { engineW: number; text: string } | undefined }> = {}
 
 // ---- 额度恢复提醒 ----
 type Watch = { armed: boolean; resetAt: number }
@@ -882,7 +916,10 @@ function kidKnown(k: Kid) {
 function kidEnded(k: Kid) {
   if (!k.ran || k.endNoted) return
   k.endNoted = true
-  if (ask && toolKind(currentTool) !== 'agent') ask.kidEnds += 1
+  if (ask && toolKind(currentTool) !== 'agent' && !ask.endedIds.has(k.id)) {
+    ask.endedIds.add(k.id)
+    ask.kidEnds = ask.endedIds.size
+  }
 }
 
 // "提问做完" 的防抖: 主线程闲着、没有子代理在跑时才排; force = 主线程刚结束一段 (重新计时)
@@ -1590,6 +1627,8 @@ async function walkwayView($: any, els: any, W: number, rows: Rows, sky: boolean
     mood,
     pct: pct ?? lastPct,
     tool: currentTool ? toolKind(currentTool) : '',
+    toolSeq,
+    toolLast,
     typeSeq,
     jumpSeq,
     celebSeq,
@@ -1659,6 +1698,75 @@ export function receiptFor(id: string, durationMs: number | undefined, now: numb
   if (!maybeRunning && !maybeLast) receiptOf[id] = null
   return undefined
 }
+// 引擎 (2.1.289) 写时长的办法, 照抄: 不到 1 分钟 "24s" (秒数向下取整); 再长 "9m 6s" / "1h 2m 3s" / "1d 2h 3m"
+export function engineDur(ms: number): string {
+  if (ms < 60000) {
+    if (ms === 0) return '0s'
+    if (ms < 1) return (ms / 1000).toFixed(1) + 's'
+    return Math.floor(ms / 1000) + 's'
+  }
+  let d = Math.floor(ms / 86400000)
+  let h = Math.floor((ms % 86400000) / 3600000)
+  let m = Math.floor((ms % 3600000) / 60000)
+  let s = Math.round((ms % 60000) / 1000)
+  if (s === 60) (s = 0), m++
+  if (m === 60) (m = 0), h++
+  if (h === 24) (h = 0), d++
+  if (d > 0) return `${d}d ${h}h ${m}m`
+  if (h > 0) return `${h}h ${m}m ${s}s`
+  return `${m}m ${s}s`
+}
+// 引擎那行占几格: 2 格符号 + "Cooked for 24s · done 8:13 PM", 或者还有后台子代理没回来时的
+//   "Waiting for 2 background agents to finish"; clockW = "8:13 PM" 这段的宽度 (0 = 没有 "· done")
+// 宁可估宽 (只是多一两个空格), 不能估窄 (引擎那行字会折到下一行)
+export function engineRowWidth(word: string, durationMs: number, pending: number, clockW: number): number {
+  if (pending > 0) return 2 + dw(`Waiting for ${pending} background agent${pending === 1 ? '' : 's'} to finish`)
+  return 2 + dw(`${word} for ${engineDur(durationMs)}`) + (clockW > 0 ? dw(' · done ') + clockW : 0)
+}
+// 收据放在引擎那行后面: 整行放得下就全写; 放不下先省 "改 N 个文件"; 还放不下就截 (Text 的 truncate);
+// 剩下不到 4 格就不放. 返回引擎那行的宽和收据的字
+export function receiptFit(r: Receipt, word: string, durationMs: number, cols: number, clockW: number): { engineW: number; text: string } | undefined {
+  const engineW = engineRowWidth(word, durationMs, r.pending ?? 0, clockW)
+  const room = cols - engineW
+  const full = receiptText(r)
+  if (!full || room < 4) return undefined
+  if (dw(full) <= room) return { engineW, text: full }
+  const short = receiptText({ ...r, files: 0 })
+  return { engineW, text: short || full }
+}
+// "done 8:13 PM" 里时间的宽度: 和引擎一样按 LC_ALL / LC_TIME / LANG (都没有就用系统默认) 写成 "8:13 PM";
+// 前后各错 2 秒也算一遍取宽的 (引擎记的结束时间和这里差几毫秒, 正好跨过整点时位数会变); 没有 Intl 就按 8 格
+let clockLocale: string | undefined
+let clockFmt: { locale: string | undefined; f: Intl.DateTimeFormat } | undefined // 同一种语言只建一次
+export function clockWidth(at: number): number {
+  try {
+    if (!clockFmt || clockFmt.locale !== clockLocale) clockFmt = { locale: clockLocale, f: new Intl.DateTimeFormat(clockLocale, { hour: 'numeric', minute: '2-digit' }) }
+    const f = clockFmt.f
+    return Math.max(...[at - 2000, at, at + 2000].map(t => dw(f.format(new Date(t)))))
+  } catch {
+    return 8
+  }
+}
+function localeOf(v: string): string | undefined {
+  if (!v || v === 'C' || v === 'POSIX') return undefined
+  const tag = v.split('.')[0]!.split('@')[0]!.replace(/_/g, '-')
+  if (!tag) return undefined
+  try {
+    new Intl.DateTimeFormat(tag)
+    return tag
+  } catch {
+    return undefined
+  }
+}
+async function readClockLocale($: any) {
+  try {
+    const v = (await $.env.get('LC_ALL')) || (await $.env.get('LC_TIME')) || (await $.env.get('LANG')) || ''
+    clockLocale = localeOf(String(v))
+  } catch {
+    clockLocale = undefined
+  }
+}
+
 // " · $0.42 · 改 3 个文件 +120 -30 · 工具 12 次"; 没数据的段省掉, 全没有就是空串
 export function receiptText(r: Receipt): string {
   const parts: string[] = []
@@ -1836,6 +1944,7 @@ export const register: Register = on => {
     submitSinceTurn = ''
     lastReceipt = undefined
     cancelEnd()
+    await readClockLocale($)
     saidCtxFull = false
     saidRunOut.clear()
     for (const k of Object.keys(wasRunOut)) delete wasRunOut[k]
@@ -1935,11 +2044,13 @@ export const register: Register = on => {
       // 新的一段开始: "提问做完" 的等待取消
       mainOpen = true
       cancelEnd()
-      // 这一段属于哪次提问: 前面来的是 task-notification -> 延续; 用户排队的提问 -> 新提问从这里开始;
-      // 前面什么都没来 (比如测试或引擎自己接着跑): 上一次还没做完就延续, 做完了就算新提问
+      // 这一段属于哪次提问: 用户排队的提问 -> 新提问从这里开始; 前面来的是 task-notification -> 延续;
+      // 前面没有 prompt.submit -> 引擎自己接着跑: 闲着时送回的后台结果就走这条路 (不经过 prompt.submit),
+      //   算延续, 也算 "结果送到了一次"; 已经庆祝过的提问照样只记账, 不再庆祝
       const via = submitSinceTurn
       submitSinceTurn = ''
-      if (askFromNext || !ask || (via !== 'task-notification' && via === '' && ask.celebrated)) ask = newAsk(turnStartedAt, usd0)
+      if (askFromNext || !ask) ask = newAsk(turnStartedAt, usd0)
+      else if (via === '') ask.notices += 1
       askFromNext = false
       ask.segments += 1
       const h = new Date().getHours()
@@ -2037,6 +2148,8 @@ export const register: Register = on => {
     if (!e.agentId) {
       turnTools += 1
       currentTool = e.tool
+      toolSeq += 1
+      toolLast = toolKind(e.tool)
     }
     totalTools += 1
     toolCounts[e.tool] = (toolCounts[e.tool] ?? 0) + 1
@@ -2124,6 +2237,12 @@ export const register: Register = on => {
       lastActive = now
       // 这次提问做没做完: 子代理都结束了、等一小会儿没有新的一段才算 (见 armEnd / endAsk)
       await syncAgents($, now)
+      // 引擎那行会不会写成 "Waiting for N background agents to finish": 还在跑的 + 结束了结果还没送到的
+      if (lastReceipt && lastReceipt.completedAt === now) {
+        const n = runningKids().length + (q ? Math.max(0, q.kidEnds - q.notices) : 0)
+        lastReceipt.seg.pending = n
+        lastReceipt.cum.pending = n
+      }
       armEnd($, true)
       await refreshRepo($)
       await checkMilestones($)
@@ -2139,15 +2258,23 @@ export const register: Register = on => {
     const known = receiptOf[e.requestId]
     if (known === null) return theirs // 已确定不配: 最省的路
     const r = known ?? receiptFor(e.requestId, e.props.durationMs, await $.clock.now())
-    const text = r ? receiptText(r) : ''
-    if (!text) return theirs
+    if (!r || !receiptText(r)) return theirs
+    const cols = e.viewport?.columns ?? 80
+    let c = fitOf[e.requestId]
+    if (!c || c.cols !== cols) c = fitOf[e.requestId] = { cols, fit: receiptFit(r, e.props.word, e.props.durationMs, cols, clockWidth(r.completedAt)) }
+    const fit = c.fit
+    if (!fit) return theirs
     const { Box, Text } = $.ui.resolve(e)
+    // 引擎那行的外层是 width 100%: 直接并排时它按整行宽参与挤压, 收据被推到最右边还截短 (0.16.2 实测)
+    // 所以给它套一层定宽的 Box (宽 = 引擎那行字的宽度), 100% 就按这个宽算; 收据紧跟在后面, 剩下的宽给它
     // 底边对齐: 引擎那行上面可能留了空行 (marginTop), 收据跟在字的那一行
     return (
       <Box flexDirection="row" alignItems="flex-end">
-        {theirs}
+        <Box key="engine-row" width={fit.engineW} flexShrink={0}>
+          {theirs}
+        </Box>
         <Text key="receipt" dimColor wrap="truncate">
-          {text}
+          {fit.text}
         </Text>
       </Box>
     )

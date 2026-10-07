@@ -3,6 +3,7 @@
 // hooks (register.tsx) 只把处境当 props 传进来: 忙不忙、心情、当前工具、上下文 %、运行中的子代理、事件气泡、
 //   打字 / 发送 / 庆祝的序号、多久没动静了、悬停时的用量摘要和小贴士; 以及宽度、行数、有没有天空行
 // 模块自己用帧钟 (surface.every, 150ms 一帧) 推进: 走路、排队、粒子、气泡几秒后消失、5 分钟睡着、工具刚结束再撑 4 帧
+//   (v0.16.3: 工具按序号认, 两帧之间就用完的工具也做满 4 帧)
 // 鼠标停在大螃蟹上 (只有全屏模式有指针事件): 大螃蟹立刻停下举钳, 队伍也停; 气泡在停下那一刻定好位置和全文;
 //   指针离开约 0.5 秒后接着走; 指针在横栏别处时, 闲着的螃蟹眼睛看过去. 点击不做任何事 (点一下 Client 会拿走键盘焦点)
 // 终端的 Client 里没有 Raster: 半格像素画成 Text (上像素当 color, 下像素当 backgroundColor), 同色的连续格子合成一段
@@ -41,6 +42,8 @@ export type WalkProps = {
   mood: Mood
   pct: number // 上下文 %
   tool: ToolKind | '' // 主会话正在用的工具 ('' = 没有: 在想 / 在回复)
+  toolSeq: number // 主会话用工具的序号 (变了 = 刚用过一次工具, 哪怕已经用完了)
+  toolLast: ToolKind | '' // 最近一次工具的种类
   typeSeq: number // 打字的序号 (变了 = 刚按了键)
   jumpSeq: number // 发出消息的序号
   celebSeq: number // 一轮结束的序号
@@ -64,6 +67,7 @@ type St = {
   lastBusyF: number // 最后一次有动静的帧 (5 分钟 = 2000 帧没动静就睡)
   tool: ToolKind | ''
   toolUntil: number // 工具刚结束时再撑到哪一帧
+  toolSeq: number
   hover: boolean // 指针正停在大螃蟹上
   holdUntil: number // 指针离开后再停到哪一帧
   spot?: { x: number; text: string } // 悬停气泡 (停下那一刻定好的位置和全文)
@@ -164,6 +168,7 @@ function start(p: WalkProps): St {
     lastBusyF: -Math.round(p.idleMs / FRAME_MS),
     tool: '',
     toolUntil: -1,
+    toolSeq: p.toolSeq,
     hover: false,
     holdUntil: -1,
     sig: '',
@@ -200,9 +205,17 @@ export default function Walkway(props: WalkProps, surface: any) {
         st.sayUntil = st.f + SAY_FRAMES
       }
       if (p.working || p.agents.length) st.lastBusyF = st.f
+      // 工具: 序号变了就做满 TOOL_HOLD_FRAMES 帧 (工具只跑几十毫秒、两帧之间就用完了也不漏); 还在用就一直续上
+      if (p.toolSeq !== st.toolSeq) {
+        st.toolSeq = p.toolSeq
+        if (p.toolLast) {
+          st.tool = p.toolLast
+          st.toolUntil = st.f + TOOL_HOLD_FRAMES
+        }
+      }
       if (p.tool) {
         st.tool = p.tool
-        st.toolUntil = st.f + TOOL_HOLD_FRAMES
+        st.toolUntil = Math.max(st.toolUntil, st.f + TOOL_HOLD_FRAMES)
       }
       if (!st.hover && st.f >= st.holdUntil) st.spot = undefined
       laneFit(st.L, p.w, p.rows, p.sky)
