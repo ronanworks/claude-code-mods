@@ -1,6 +1,6 @@
 {
   "name": "html-shelf",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "终端里 Claude 的回复更顺手：文件路径单击打开（HTML、文档 md/pdf/txt/json/csv/Office、图片、音视频、文件夹；脚本只在文件夹里选中不运行）；代码块画成卡片，一键复制，单条 shell 命令可 Insert 到输入框；文字里 `反引号` 写的命令也补一张卡片；悬停回复右上角 Copy all；Write/Edit 工具行带 Open；/open [N|list] 打开最近的文件（Windows / macOS / Linux）",
   "author": { "name": "Ronan" },
   "repository": "https://github.com/ronanworks/claude-code-mods",

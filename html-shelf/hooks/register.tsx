@@ -920,7 +920,6 @@ type CardSpec = {
   id: string
   lang: string
   code: string
-  indent: number
   fill?: { cmd: string; kind: ShellKind }
 }
 function drawCard($: any, els: any, c: CardSpec, gap: number) {
@@ -958,7 +957,8 @@ function drawCard($: any, els: any, c: CardSpec, gap: number) {
     </Box>,
   )
   return (
-    <Box key={c.keys.card} flexDirection="column" marginTop={gap} marginLeft={c.indent} backgroundColor={CARD_BODY}>
+    // 卡片一律和回复的文字左边对齐, 不跟着列表缩进 (缩进的卡片和别的卡片左边对不齐, 用户嫌乱)
+    <Box key={c.keys.card} flexDirection="column" marginTop={gap} backgroundColor={CARD_BODY}>
       <Box
         flexDirection="row"
         justifyContent={c.lang ? 'space-between' : 'flex-end'}
@@ -987,7 +987,6 @@ function codeCard($: any, els: any, p: Extract<Part, { kind: 'code' }>, n: numbe
       id: `${rid}:${n}`,
       lang: p.lang.slice(0, 20),
       code: p.code,
-      indent: p.indent,
       fill: kind && cmd ? { cmd, kind } : undefined,
     },
     gap,
@@ -995,7 +994,7 @@ function codeCard($: any, els: any, p: Extract<Part, { kind: 'code' }>, n: numbe
 }
 
 // 行内命令的卡片: 复制 = 反引号里的原文; 填入 = 补一个 ! (原文已带 ! 不重复补)
-function inlineCard($: any, els: any, c: InlineCard, k: number, indent: number, rid: string) {
+function inlineCard($: any, els: any, c: InlineCard, k: number, rid: string) {
   return drawCard(
     $,
     els,
@@ -1004,7 +1003,6 @@ function inlineCard($: any, els: any, c: InlineCard, k: number, indent: number, 
       id: `${rid}:inline:${c.key}`,
       lang: c.lang,
       code: c.cmd,
-      indent,
       fill: { cmd: c.cmd, kind: c.kind },
     },
     1,
@@ -1056,7 +1054,7 @@ async function drawWithCopy($: any, e: any, props: { text: string; isFirstOfRepl
         if (!c) continue
         const key = j === 0 ? `html-links-${rid}-${i}` : `html-links-${rid}-${i}-${j}`
         rows.push(<Box marginTop={rows.length === 0 ? 0 : 1}>{await proseMarkdown($, els, c.text, key, rid, budget)}</Box>)
-        for (const cmd of c.cards) rows.push(inlineCard($, els, cmd, ++k, c.indent, rid))
+        for (const cmd of c.cards) rows.push(inlineCard($, els, cmd, ++k, rid))
       }
       continue
     }

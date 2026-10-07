@@ -184,12 +184,12 @@ test('同一条回复里 HTML 链接和列表里的代码块都能用', async ($
   const href = md.text.match(/\((file:[^)]+)\)/)[1]
   await ui.press({ key: 'html-links-m4-0', link: { href } })
   expect(JSON.stringify(log.opened[0])).toContain('report.html')
-  // 列表里缩进 3 格的代码块: 卡片跟着缩进, 复制出来的不带缩进
+  // 列表里缩进 3 格的代码块: 卡片和回复的文字左边对齐 (不跟着缩进), 复制出来的不带缩进
   expect(await copyButtons(ui)).toHaveLength(1)
   await ui.press({ key: 'copy-1' })
   expect(log.copied).toEqual(['cd D:\\proj\nnpm test'])
   const card: any = (await ui.findAll({ type: 'Box' })).find((b: any) => b.key === 'code-1')
-  expect(card.props.marginLeft).toBe(3)
+  expect(card.props.marginLeft ?? 0).toBe(0)
   const mds: string[] = (await ui.findAll({ type: 'Markdown' })).map((m: any) => m.text)
   expect(mds).toContain('2. 看结果')
   await ui.unmount()
@@ -566,7 +566,8 @@ test('列表项里的行内命令: 卡片在整个列表项 (含续行) 后面�
     'md:- 完成后告诉我',
   ])
   const cards = await inlineCards(ui)
-  expect(cards.map((b: any) => b.props.marginLeft)).toEqual([2, 2])
+  // 列表项里的卡片也和别的卡片左边对齐 (不跟着列表缩进)
+  expect(cards.map((b: any) => b.props.marginLeft ?? 0)).toEqual([0, 0])
   expect((await ui.findAll({ type: 'Code' })).map((c: any) => [c.text, c.props.language])).toEqual([
     [PS, 'powershell'],
     ['python -m unittest -v scripts/x/test_server.py', 'bash'],
@@ -661,7 +662,7 @@ test('表格里的行内命令: 卡片在整张表格后面', async ($, on) => {
     ['pip install -r requirements.txt', 'bash'],
     ['Get-ChildItem .\\docs | Select-Object -First 3', 'powershell'],
   ])
-  expect((await inlineCards(ui)).map((b: any) => b.props.marginLeft)).toEqual([0, 0])
+  expect((await inlineCards(ui)).map((b: any) => b.props.marginLeft ?? 0)).toEqual([0, 0])
   await ui.unmount()
 })
 
