@@ -23,7 +23,7 @@ Claude Code [mods](https://code.claude.com/docs/en/plugins/mods/overview) are pl
 
 | Mod | What it does |
 |---|---|
-| **usage-hud** | A usage panel under the prompt. A pixel crab acts out the tool Claude is using, and its mood follows how fast you burn your quota. Model and effort, project and branch, session time and cost, context / 5-hour / weekly usage and tokens, all at a glance |
+| **usage-hud** | A usage panel under the prompt. A pixel crab acts out the tool Claude is using, and its mood follows how fast you burn your quota. Model and effort, project and branch, session time and cost, context / 5-hour / weekly usage and tokens, all at a glance. A second crab walks above the prompt with your subagents |
 | **html-shelf** | File paths in Claude's replies (HTML, PDF, images, video, folders …) open with one click. Code blocks are drawn as cards you can copy or drop into the prompt |
 
 > The UI text is in Chinese. The GIFs on this page show exactly what you get.
@@ -100,7 +100,7 @@ The crab follows what Claude is doing:
 | Writing or editing a file | Taps with its right claw as the page fills with text |
 | Running a command | Types with both claws, terminal cursor blinking |
 | On the web | A spinning globe |
-| Running subagents | A baby crab hops slowly beside it; the status cell says how many ("+3 agents") |
+| Running subagents | Baby crabs walk in the walkway above the prompt (see below); the status cell says how many ("+3 agents") |
 | Done with a turn | Jumps with claws up, gold sparkles |
 | Idle / idle for 5 minutes | Blinks and looks around / sleeps, blowing bubbles |
 | At ≥ 80% context | Turns red and sweats; at ≥ 95% flashes red |
@@ -112,6 +112,14 @@ The crab follows what Claude is doing:
 | Using less than the clock (pace < 0.8) | Wears sunglasses, relaxed | Normal |
 | Clearly ahead of pace, on track to run out before the reset | Sweats | The percentage and the countdown turn red: `40m用完` (empty in 40m) |
 | Runs out within 30 minutes, or ≥ 95% used | Panics with claws up and a "!" | Same as above |
+
+**The crab walkway above the prompt** (terminal only): a two-row strip right above the input box, home to a second crab.
+
+- While Claude works, the crab walks sideways. Its speed follows the mood: it strolls when relaxed and scurries when panicking. When idle it lies down and blinks; after 5 idle minutes it falls asleep.
+- Each running subagent adds a baby crab to the line. When a subagent finishes, its crab waves and walks off.
+- Speech bubbles appear for a few seconds: a finished turn (「搞定 3m12s」, done), a finished compaction, a quota reset, a red pace warning (「慢点！40m用完」, slow down, empty in 40m), and a permission prompt waiting for you (「等你点头」).
+- In fullscreen mode (`/tui fullscreen`), hovering over the walkway shows your current usage and a tip.
+- The engine draws `[-]` at the strip's right end: click it or press ctrl+x ctrl+a to fold the strip away. `/hud crab off` turns it off for good. In a short terminal the strip shrinks to one row or hides.
 
 **More practical touches**
 
@@ -129,6 +137,7 @@ The panel shrinks with the window: 66–95 columns (such as macOS's default 80) 
 | `/hud` | Cycles full → compact (one line) → hidden |
 | `/hud top`, `/hud bottom` | Puts the panel above or below the prompt (below by default) |
 | `/hud agents` | Opens the subagent board; Esc closes it |
+| `/hud crab`, `/hud crab on`, `/hud crab off` | Toggles the crab walkway above the prompt (on by default) |
 
 In the desktop app, the panel becomes a dedicated SVG card (crab + dashboard) above the prompt, borderless, following the light or dark theme:
 
