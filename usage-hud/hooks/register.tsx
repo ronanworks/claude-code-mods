@@ -37,7 +37,8 @@ import { crabSvg, dashSvg, type DashData } from './desktop'
 //
 // v0.13 改动:
 //   时间刻度: 5小时/本周 的用量条上画一道亮色 │, 位置 = 窗口已过时间 / 窗口长度; 彩色段超过刻度 = 用得比时间快
-//   文字缩短: 平时只写重置倒计时 "1h54m" (暗色); 会用完时百分比和文字都变红, 写 "40m用完" (放不下就只写红色倒计时)
+//   文字缩短: 平时只写重置倒计时 "1h54m" (暗色); 会用完时百分比变红, 文字写红色的 "40m用完"
+//     (v0.13.1: 预计用完的时间一定带 "用完"; 放不下就换 "4d用完", 再放不下照常写暗色的重置倒计时)
 //     完整版 5小时/本周 的附加那段从 11 列缩到 7 列, 省下的给用量条; 中等版三根条仍然一样长
 //   子代理小螃蟹: 不管几个子代理都只画一只 (3x2, 没有眼睛), 右下角慢慢跳; 数量看 "+N代理"
 //
@@ -277,6 +278,14 @@ function durShort(ms: number): string {
   if (h < 24) return h + 'h'
   return Math.floor(h / 24) + 'd' + (h % 24) + 'h'
 }
+// 粗一点的时长, 最多 3 列: 40m / 13h / 4d (往下取整, 宁可说早); 给 "4d用完" 这种放进 7 列用
+function durCoarse(ms: number): string {
+  const m = Math.max(0, Math.floor(ms / 60000))
+  if (m < 60) return m + 'm'
+  const h = Math.floor(m / 60)
+  if (h < 24) return h + 'h'
+  return Math.floor(h / 24) + 'd'
+}
 // 大数: 999 / 12.3k / 4.56M / 345.4M / 2.26B
 function big(n: number): string {
   if (n < 1000) return String(Math.round(n))
@@ -324,12 +333,15 @@ export function moodOf(...paces: Array<Pace | undefined>): Mood {
   return ms.reduce((a, b) => (MOOD_RANK[b] > MOOD_RANK[a] ? b : a))
 }
 
-// 用量条后面那段: 平时只写重置倒计时 "1h54m" (暗色); 会用完 -> "40m用完" (红色), 放不下 "用完" 两个字就只写红色倒计时
+// 用量条后面那段. 规矩: 只有一个时间 = 重置倒计时 (暗色); 预计用完的时间一定带 "用完" 两个字 (红色)
+//   会用完 -> "4d12h用完", 放不下换粗一点的 "4d用完"; 还放不下就照常写暗色的重置倒计时, 只靠红色百分比提醒
+//   (以前放不下时只写红色的 "4d12h", 用户会以为是 4 天半后重置)
 function limitExtra(p: Pace | undefined, extraW: number): { text: string; warn: boolean } {
   if (!p || p.resetIn === undefined) return { text: '', warn: false }
   if (p.willRunOut && p.runOutIn !== undefined) {
-    const d = durShort(p.runOutIn)
-    return { text: dw(d + '用完') <= extraW ? d + '用完' : d, warn: true }
+    for (const d of [durShort(p.runOutIn), durCoarse(p.runOutIn)]) {
+      if (dw(d + '用完') <= extraW) return { text: d + '用完', warn: true }
+    }
   }
   return { text: durShort(p.resetIn), warn: false }
 }
@@ -1484,7 +1496,7 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
   bw = Math.max(3, Math.min(60, bw))
   // 5小时 / 本周 的附加那段 (limW 列) 和条长 (limBw):
   //   完整版: 三格在不同列, 附加只放 "1h54m" / "40m用完", 7 列就够, 省下的给条;
-  //           上下文退到 5 列时 (窄一点的完整版) 三格都用 5 列, 条一样长, 不比旧版短 (会用完时只写红色倒计时)
+  //           上下文退到 5 列时 (窄一点的完整版) 三格都用 5 列, 条一样长, 不比旧版短 (会用完时只有百分比红, 文字照常是重置倒计时)
   //   中等版: 三根条在同一列上下叠着, 条长和附加宽度必须和上下文那根一样, 百分比才竖着对齐
   let limW = extraW
   let limBw = bw
@@ -1494,7 +1506,7 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
   }
   const x5 = limitExtra(p5, limW)
   const xw = limitExtra(pw, limW)
-  // 会用完: 百分比和附加文字都变红 (加粗)
+  // 会用完: 百分比变红 (加粗); 附加文字写成 "…用完" 时也变红, 放不下 "用完" 时照常是暗色的重置倒计时
   const limMeter = (key: string, lab: string, l: Limit | undefined, p: Pace | undefined, x: { text: string; warn: boolean }) =>
     meter(els, {
       key,
@@ -1502,7 +1514,7 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
       labelW: LABEL_W,
       onPress: onUsage,
       pct: l?.percentUsed,
-      pctColor: x.warn ? WARN : undefined,
+      pctColor: p?.willRunOut ? WARN : undefined,
       bw: limBw,
       extra: x.text,
       extraW: limW,

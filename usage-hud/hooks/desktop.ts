@@ -272,9 +272,15 @@ function flow(x: number, y: number, runs: Run[], size = 13, anchor: 'start' | 'e
 }
 const SEP: Run = ['  ·  ', T.sep]
 
-// "2h12m" -> "2h", "1d18h" -> "1d", "240k / 1.0M" -> "240k", "40m 用完" -> "40m" (旧写法 "约 40m 后用完" / "2h12m 后重置" 也认)
+// "2h12m" -> "2h", "1d18h" -> "1d", "240k / 1.0M" -> "240k"; 会用完的说明缩短时留着 "用完": "4d12h 用完" -> "4d 用完"
+// (只剩一个时间会被看成重置倒计时); 旧写法 "约 40m 后用完" / "2h12m 后重置" 也认
 function shortExtra(s: string): string {
-  const t = s.replace(/\s*后?(重置|用完)$/, '').replace(/^约\s*/, '').split('/')[0].trim()
+  const t = s.replace(/^约\s*/, '').trim()
+  const out = t.match(/^(\S+?)\s*后?用完$/)
+  if (out) return coarseDur(out[1]) + ' 用完'
+  return coarseDur(t.replace(/\s*后?重置$/, '').split('/')[0].trim())
+}
+function coarseDur(t: string): string {
   const hm = t.match(/^(\d+)h\d+m$/)
   if (hm) return hm[1] + 'h'
   const dh = t.match(/^(\d+)d\d+h$/)

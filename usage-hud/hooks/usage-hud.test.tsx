@@ -463,7 +463,7 @@ test('配速: 公式、情绪档位、窗口刚开始不外推、没读数不报
   expect(moodOf(undefined, undefined)).toBe('normal')
 })
 
-test('配速预警上面板: 会用完时 5小时 的百分比和文字都变红, 写 "30m用完" (放不下就只写红色倒计时); 平时只写重置倒计时; 没有 "后重置"', async ($, on) => {
+test('配速预警上面板: 会用完时 5小时 的百分比变红, 写红色 "30m用完" (放不下换 "2h用完", 再放不下照常写暗色重置倒计时); 红色的时间一定带 "用完"; 没有 "后重置"', async ($, on) => {
   const t = Date.now()
   // 5小时: 已过 2h 用了 80% -> 30 分钟后用完 ("30m用完" 正好 7 列); 本周: 已过 4 天用了 12% -> 不报警, 3 天后重置
   let usage: any = { ...USAGE, rateLimits: [lim('five_hour', 80, t + 3 * H), lim('seven_day', 12, t + 3 * 24 * H)] }
@@ -471,6 +471,8 @@ test('配速预警上面板: 会用完时 5小时 的百分比和文字都变红
   const noOld = async (ui: any) => {
     for (const x of await ui.findAll({ type: 'Text' })) {
       expect(/后重置|后用完|约/.test(x.text) ? 'old text: ' + x.text : 'ok').toBe('ok')
+      // 只有一个时间的红字会被看成重置倒计时: 红色的时间必须带 "用完"
+      if (x.props.color === '#f87171' && /\d+[mhd]/.test(x.text)) expect(x.text.includes('用完') ? 'ok' : 'bare red time: ' + x.text).toBe('ok')
     }
   }
   // 完整版 (140 列, 附加 7 列) 和中等版 (90 列, 附加 11 列): "30m用完"
@@ -493,11 +495,11 @@ test('配速预警上面板: 会用完时 5小时 的百分比和文字都变红
     for (const s of await strings(ui)) expect(SAFE.test(s) ? 'ok' : 'unsafe: ' + s).toBe('ok')
     await ui.unmount()
   }
-  // 中等版窄的时候 (82 列, 附加 5 列) 放不下 "用完": 只写红色倒计时
+  // 中等版窄的时候 (82 列, 附加 5 列) 连 "30m用完" 也放不下: 照常写暗色的重置倒计时 (3h00m), 只有百分比红
   const mid = await mountHint($, 'terminal', 82)
   const m5 = await meterOf(mid, 'h5')
-  expect(m5.extra?.text).toBe('30m')
-  expect(m5.extra?.color).toBe('#f87171')
+  expect(m5.extra?.text).toBe('3h00m')
+  expect(m5.extra?.color).toBe('#71717a')
   expect(m5.pct?.color).toBe('#f87171')
   await noOld(mid)
   await mid.unmount()
@@ -506,13 +508,24 @@ test('配速预警上面板: 会用完时 5小时 的百分比和文字都变红
   const pctTexts = (await narrow.findAll({ type: 'Text' })).filter((x: any) => /^\d+%$/.test(x.text.trim()) && x.props.color === '#f87171')
   expect(pctTexts.length).toBe(1)
   await narrow.unmount()
-  // 用完还早 (2 小时后): 完整版 7 列放不下 "2h00m用完" -> 只写红色 "2h00m"; 中等版 11 列放得下
+  // 用完还早 (2 小时后): 完整版 7 列放不下 "2h00m用完" -> 换粗一点的红色 "2h用完"; 中等版 11 列放得下
   usage = { ...USAGE, rateLimits: [lim('five_hour', 50, t + 3 * H), lim('seven_day', 12, t + 3 * 24 * H)] }
   const late = await mountHint($, 'terminal', 140)
   const l5 = await meterOf(late, 'h5')
-  expect(l5.extra?.text).toBe('2h00m')
+  expect(l5.extra?.text).toBe('2h用完')
   expect(l5.extra?.color).toBe('#f87171')
+  await noOld(late)
   await late.unmount()
+  // 本周会用完 (用户截图那种: 窗口刚过 7h 用了 6%, 4 天多后用完): 完整版写红色 "4d用完", 不写光秃秃的 "4d12h"
+  usage = { ...USAGE, rateLimits: [lim('five_hour', 10, t + 4 * H), lim('seven_day', 6, t + 7 * 24 * H - 7 * H)] }
+  const wkWarn = await mountHint($, 'terminal', 140)
+  const ww = await meterOf(wkWarn, 'wk')
+  expect(ww.extra?.text).toBe('4d用完')
+  expect(ww.extra?.color).toBe('#f87171')
+  expect(ww.pct?.color).toBe('#f87171')
+  await noOld(wkWarn)
+  await wkWarn.unmount()
+  usage = { ...USAGE, rateLimits: [lim('five_hour', 50, t + 3 * H), lim('seven_day', 12, t + 3 * 24 * H)] }
   const late90 = await mountHint($, 'terminal', 90)
   expect((await meterOf(late90, 'h5')).extra?.text).toBe('2h00m用完')
   await late90.unmount()
@@ -1026,6 +1039,17 @@ test('客户端仪表盘: 5小时/本周 的条上有亮色细竖线刻度 (略�
   expect(warn).toContain('3d0h')
   expect(redSpans(warn)).toBe(2) // 5小时 的百分比 + "30m 用完"
   expect(/后重置|后用完|约/.test(warn)).toBe(false)
+  // 窄的时候缩写也留着 "用完" ("4d12h 用完" -> "4d 用完"), 不出现光秃秃的红色时间 (会被看成重置倒计时)
+  const redTexts = (src: string) => [...src.matchAll(/<tspan fill="#f87171"[^>]*>([^<]*)<\/tspan>/g)].map(m => m[1].trim())
+  const seenRed = new Set<string>()
+  for (const width of [900, 760, 640, 560, 480, 420, 360]) {
+    const svg = dashSvg({ model: 'Opus 5.5', effort: 'medium', project: 'p', branch: '', session: '1m', cost: '', ctx: { pct: 10, extra: '' }, five: { pct: 30, extra: '1h54m' }, week: { pct: 6, extra: '4d12h 用完', warn: true, tick: 0.04 }, status: { text: '', tone: 'idle' }, tools: '', tokenTotal: '', tokenOutput: '' }, { width })
+    for (const r of redTexts(svg)) {
+      expect(/^\d+%$/.test(r) || r.includes('用完') ? 'ok' : `${width}px: bare red "${r}"`).toBe('ok')
+      seenRed.add(r)
+    }
+  }
+  expect(seenRed.has('4d12h 用完')).toBe(true)
   // 负路径: 配速正常 -> 没有 "用完", 没有红字; 刻度照样有
   usage = { ...USAGE }
   const ok = await dash(140)
